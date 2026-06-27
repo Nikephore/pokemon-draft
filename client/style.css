@@ -597,6 +597,67 @@ button:focus, button:focus-visible { outline: 3px solid var(--red-border); }
   letter-spacing: -0.01em;
 }
 
+/* ── Participant card — team-view interaction ── */
+.participant-card-clickable {
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s, transform 0.1s;
+}
+
+.participant-card-clickable:hover {
+  transform: translateY(-2px);
+}
+
+/* ── Team-view banner + empty slots ── */
+.team-view-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.6rem 1rem;
+  border-radius: 10px;
+  border: 2px solid;
+  margin-bottom: 0.75rem;
+}
+
+.team-view-label {
+  font-size: 0.95rem;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.team-view-count {
+  font-size: 0.8rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.team-view-close {
+  padding: 0.2rem 0.65rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  border-radius: 6px;
+  border: 1.5px solid rgba(0,0,0,0.15);
+  background: rgba(0,0,0,0.05);
+  color: inherit;
+  cursor: pointer;
+}
+
+.team-view-close:hover { background: rgba(0,0,0,0.12); border-color: rgba(0,0,0,0.25); }
+
+.pokemon-card-empty-slot {
+  border: 1.5px dashed rgba(0,0,0,0.1);
+  background: transparent;
+  min-height: 120px;
+  cursor: default;
+}
+
+.pokemon-card-empty-slot:hover {
+  transform: none;
+  box-shadow: none;
+  border-color: rgba(0,0,0,0.1);
+}
+
 /* ── Sprite wrapper (needed for pick-owner-badge overlay) ── */
 .pokemon-card-sprite-wrap {
   position: relative;
@@ -643,6 +704,18 @@ button:focus, button:focus-visible { outline: 3px solid var(--red-border); }
   transform: translateY(-4px);
   box-shadow: 0 8px 20px rgba(0,0,0,0.18);
   border-color: var(--red);
+}
+
+.pokemon-card-disabled {
+  opacity: 0.35;
+  filter: grayscale(60%);
+  cursor: not-allowed;
+}
+
+.pokemon-card-disabled:hover {
+  transform: none;
+  box-shadow: var(--card-shadow);
+  border-color: rgba(0,0,0,0.08);
 }
 
 /* ── Type badges ── */
@@ -720,7 +793,57 @@ button:focus, button:focus-visible { outline: 3px solid var(--red-border); }
 .tier-badge.ZU      { background: #78909c; }
 .tier-badge.LC      { background: #00bcd4; }
 .tier-badge.NFE     { background: #607d8b; }
-.tier-badge.Illegal { background: #424242; }
+.tier-badge.Illegal  { background: #424242; }
+.tier-badge.tier-mega { background: #9c27b0; }
+
+/* ── Tier slots progress row ── */
+.pick-tier-slots {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  padding: 0.5rem 0 0.25rem;
+}
+
+.pick-tier-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  background: rgba(0,0,0,0.04);
+  border: 1px solid rgba(0,0,0,0.1);
+  border-radius: 6px;
+  padding: 0.15rem 0.5rem 0.15rem 0.25rem;
+  transition: opacity 0.15s;
+}
+
+.pick-tier-chip-count {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.pick-tier-chip-full {
+  opacity: 0.4;
+}
+
+.pick-tier-chip-full .pick-tier-chip-count {
+  color: var(--red);
+}
+
+.pick-tier-slots-interactive .pick-tier-chip {
+  cursor: pointer;
+  transition: opacity 0.12s, transform 0.1s;
+}
+
+.pick-tier-slots-interactive .pick-tier-chip:hover {
+  opacity: 1;
+  transform: translateY(-1px);
+}
+
+.pick-tier-chip-active {
+  box-shadow: 0 0 0 2px rgba(0,0,0,0.35);
+  opacity: 1 !important;
+  transform: translateY(-1px);
+}
 
 /* ── Pagination ── */
 .pagination {
@@ -913,6 +1036,25 @@ button:focus, button:focus-visible { outline: 3px solid var(--red-border); }
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.draft-delete-btn {
+  flex-shrink: 0;
+  padding: 0.2rem 0.6rem;
+  border-radius: 6px;
+  border: 1.5px solid var(--red-border);
+  background: var(--red-light);
+  color: var(--red);
+  font-size: 0.72rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.draft-delete-btn:hover {
+  background: var(--red);
+  border-color: var(--red);
+  color: #fff;
 }
 
 .draft-list-card-meta {

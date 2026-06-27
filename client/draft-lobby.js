@@ -7,6 +7,7 @@ const state = {
   name: '',
   teamSize: 6,
   coins: 100,
+  maxMegas: 0,
   tierSlots: Object.fromEntries(TIERS.map(t => [t, 0])),
 }
 
@@ -48,7 +49,7 @@ function render() {
         <input id="draft-name" class="form-input" type="text" maxlength="40" placeholder="Ej: Liga de Tontopollas de España" value="${state.name}" />
       </div>
 
-      <div class="form-row">
+      <div class="form-row" style="grid-template-columns:1fr 1fr 1fr">
         <div class="form-group">
           <label class="form-label">Pokémon por equipo</label>
           <input id="team-size" class="form-input" type="number" min="1" max="18" value="${state.teamSize}" />
@@ -56,6 +57,10 @@ function render() {
         <div class="form-group">
           <label class="form-label">Monedas por equipo</label>
           <input id="coins" class="form-input" type="number" min="0" value="${state.coins}" />
+        </div>
+        <div class="form-group">
+          <label class="form-label">Megaevoluciones máx.</label>
+          <input id="max-megas" class="form-input" type="number" min="0" max="${state.teamSize}" value="${state.maxMegas}" />
         </div>
       </div>
 
@@ -96,6 +101,10 @@ function render() {
     state.coins = Math.max(0, parseInt(e.target.value) || 0)
   })
 
+  document.querySelector('#max-megas').addEventListener('input', e => {
+    state.maxMegas = Math.max(0, parseInt(e.target.value) || 0)
+  })
+
   document.querySelectorAll('.tier-slot-input').forEach(input => {
     input.addEventListener('input', e => {
       const val = parseInt(e.target.value) || 0
@@ -132,6 +141,7 @@ function handleCreate() {
     name: state.name.trim() || 'Draft',
     teamSize: state.teamSize,
     coins: state.coins,
+    maxMegas: state.maxMegas,
     tierSlots: { ...state.tierSlots },
   }
 

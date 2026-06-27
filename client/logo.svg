@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 295" width="220" height="295">
+  <defs>
+    <linearGradient id="g" x1="55" y1="10" x2="165" y2="285" gradientUnits="userSpaceOnUse">
+      <stop offset="0%"   stop-color="#f06292"/>
+      <stop offset="20%"  stop-color="#42a5f5"/>
+      <stop offset="46%"  stop-color="#26c6da"/>
+      <stop offset="73%"  stop-color="#66bb6a"/>
+      <stop offset="100%" stop-color="#d4e157"/>
+    </linearGradient>
+    <clipPath id="c">
+      <path d="M110,10 C145,6 188,28 190,68 C192,108 162,124 135,136 C162,148 180,168 174,206 C168,244 132,278 95,278 C58,278 22,252 22,215 C22,178 52,162 78,150 C52,138 32,118 30,80 C28,42 75,14 110,10Z"/>
+    </clipPath>
+  </defs>
+
+  <!-- White sticker border -->
+  <path d="M110,0 C152,-4 202,22 204,68 C206,114 174,132 145,145 C174,158 194,180 188,218 C182,256 140,290 95,290 C50,290 10,262 10,215 C10,168 42,152 70,140 C42,128 20,106 18,68 C16,30 68,4 110,0Z" fill="white"/>
+
+  <!-- Gradient S shape -->
+  <path d="M110,10 C145,6 188,28 190,68 C192,108 162,124 135,136 C162,148 180,168 174,206 C168,244 132,278 95,278 C58,278 22,252 22,215 C22,178 52,162 78,150 C52,138 32,118 30,80 C28,42 75,14 110,10Z" fill="url(#g)"/>
+
+  <!-- White elements clipped to the S shape -->
+  <g clip-path="url(#c)">
+    <!-- Upper triangle pointing right -->
+    <polygon points="140,50 178,68 140,86" fill="white"/>
+    <!-- Diagonal bar 1 -->
+    <polygon points="18,108 196,78 196,97 18,127" fill="white"/>
+    <!-- Diagonal bar 2 -->
+    <polygon points="18,136 196,106 196,125 18,155" fill="white"/>
+    <!-- Diagonal bar 3 -->
+    <polygon points="18,164 196,134 196,153 18,183" fill="white"/>
+    <!-- Lower triangle pointing left -->
+    <polygon points="78,198 40,216 78,234" fill="white"/>
+  </g>
+</svg>

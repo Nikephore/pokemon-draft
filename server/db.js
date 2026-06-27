@@ -57,6 +57,7 @@ db.exec(`
 for (const stmt of [
   'ALTER TABLE drafts ADD COLUMN pick_order TEXT',
   'ALTER TABLE drafts ADD COLUMN current_pick_index INTEGER NOT NULL DEFAULT 0',
+  'ALTER TABLE drafts ADD COLUMN max_megas INTEGER NOT NULL DEFAULT 0',
 ]) {
   try { db.exec(stmt) } catch (_) {}
 }
@@ -66,8 +67,8 @@ export const getParticipants    = db.prepare(`SELECT * FROM draft_participants W
 export const getActiveDrafts    = db.prepare(`SELECT * FROM drafts WHERE phase != 'complete'`)
 
 export const insertDraft = db.prepare(`
-  INSERT INTO drafts (instance_id, name, host_id, team_size, coins, tier_slots, phase)
-  VALUES (@instance_id, @name, @host_id, @team_size, @coins, @tier_slots, @phase)
+  INSERT INTO drafts (instance_id, name, host_id, team_size, coins, tier_slots, max_megas, phase)
+  VALUES (@instance_id, @name, @host_id, @team_size, @coins, @tier_slots, @max_megas, @phase)
 `)
 
 export const updateDraftPhase = db.prepare(`UPDATE drafts SET phase = ? WHERE instance_id = ?`)
@@ -101,6 +102,8 @@ export const getTeamPokemon = db.prepare(`
   WHERE t.draft_id = ? AND t.user_id = ?
   ORDER BY pick_order
 `)
+
+export const deleteDraft = db.prepare(`DELETE FROM drafts WHERE instance_id = ? AND host_id = ?`)
 
 export const getDraftsByUser = db.prepare(`
   SELECT d.id, d.instance_id, d.name, d.host_id, d.phase, d.team_size, d.coins, d.created_at,

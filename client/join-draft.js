@@ -1,24 +1,5 @@
 import { getSocket } from './socket.js'
-import { setHTML } from './dom.js'
-
-function showConfirm(message) {
-  return new Promise(resolve => {
-    const overlay = document.createElement('div')
-    overlay.className = 'modal-overlay'
-    overlay.innerHTML = `
-      <div class="modal">
-        <p class="modal-message">${message}</p>
-        <div class="modal-actions">
-          <button class="modal-btn modal-btn-cancel">Cancelar</button>
-          <button class="modal-btn modal-btn-confirm">Iniciar de todas formas</button>
-        </div>
-      </div>
-    `
-    document.body.appendChild(overlay)
-    overlay.querySelector('.modal-btn-cancel').addEventListener('click', () => { overlay.remove(); resolve(false) })
-    overlay.querySelector('.modal-btn-confirm').addEventListener('click', () => { overlay.remove(); resolve(true) })
-  })
-}
+import { setHTML, showConfirm } from './dom.js'
 
 const PLAYER_COLORS = [
   '#e53935','#1e88e5','#43a047','#fb8c00',
@@ -33,8 +14,14 @@ let _pokemonAll = []
 let _picks = []
 let _pickOrder = []
 let _currentPickIndex = 0
+let _teamSize = 0
+let _draftName = ''
+let _tierSlots = {}
+let _maxMegas = 0
+let _viewingTeamOf = null   // userId whose team is shown in the grid, or null
 let _pickSearch = ''
 let _pickTier = ''
+let _pickMegaFilter = false
 let _pickPage = 1
 const PICK_PAGE_SIZE = 30
 
@@ -44,8 +31,14 @@ export function init(discordCtx) {
   _picks = []
   _pickOrder = []
   _currentPickIndex = 0
+  _teamSize = 0
+  _draftName = ''
+  _tierSlots = {}
+  _maxMegas = 0
+  _viewingTeamOf = null
   _pickSearch = ''
   _pickTier = ''
+  _pickMegaFilter = false
   _pickPage = 1
 
   const socket = getSocket()
@@ -84,6 +77,16 @@ function render(room) {
   _picks = room.draft?.picks ?? []
   _pickOrder = room.draft?.pickOrder ?? []
   _currentPickIndex = room.draft?.currentPickIndex ?? 0
+  _teamSize = room.draft?.config?.teamSize ?? 0
+  _draftName = room.draft?.config?.name ?? ''
+  _tierSlots = room.draft?.config?.tierSlots ?? {}
+  _maxMegas  = room.draft?.config?.maxMegas  ?? 0
+
+  // Draft finished — show results summary and stop
+  if (phase === 'complete') {
+    renderCompletedSummary()
+    return
+  }
 
   // Bootstrap two-section layout on first render for this page visit
   if (!document.querySelector('#draft-top')) {
@@ -111,6 +114,58 @@ function render(room) {
       renderPickResults()
     }
   }
+}
+
+// ── Draft complete summary ─────────────────────────────────────────────────────
+
+function renderCompletedSummary() {
+  const app = document.querySelector('#app')
+  if (!app) return
+
+  const teams = _pickOrder.map(player => ({
+    ...player,
+    pokemon: _picks
+      .filter(pk => pk.userId === player.id)
+      .sort((a, b) => a.pickOrder - b.pickOrder),
+  }))
+
+  app.innerHTML = `
+    <div class="back-bar"><a class="back-link" href="#lobby">← Volver al lobby</a></div>
+    <div class="draft-detail-header">
+      <h1>${_draftName || 'Draft'}</h1>
+      <div class="draft-detail-meta">
+        <span class="draft-phase-chip draft-phase-chip-complete">Completado</span>
+        <span>${teams.length} jugadores · ${_teamSize} Pokémon/equipo</span>
+      </div>
+    </div>
+    <div class="team-cards">
+      ${teams.map(t => {
+        const color   = playerColor(t.id)
+        const initial = (t.global_name || t.username || '?')[0].toUpperCase()
+        const avatar  = t.avatar
+          ? `<img class="participant-avatar" src="/api/avatar/${t.id}/${t.avatar}" width="36" height="36" alt="${t.username}" loading="lazy" />`
+          : `<div class="participant-avatar participant-avatar-initials" style="width:36px;height:36px;font-size:14px;background:${color}">${initial}</div>`
+        return `
+          <div class="team-card" style="border-color:${color}">
+            <div class="team-card-header" style="background:${color}18">
+              ${avatar}
+              <span class="team-card-name">${t.global_name || t.username}</span>
+              <span class="team-card-count" style="color:${color}">${t.pokemon.length}/${_teamSize}</span>
+            </div>
+            <div class="team-pokemon-grid">
+              ${t.pokemon.map(p => `
+                <div class="team-pokemon-item">
+                  <img src="/api/sprite/${p.pokemonId}" alt="${p.pokemonName}" width="56" height="56" />
+                  <div class="team-pokemon-name">${p.pokemonName}</div>
+                  ${p.tier ? `<span class="tier-badge ${p.tier}">${p.tier}</span>` : ''}
+                </div>
+              `).join('')}
+            </div>
+          </div>
+        `
+      }).join('')}
+    </div>
+  `
 }
 
 // ── Top section (player cards + banners + action) ─────────────────────────────
@@ -175,14 +230,26 @@ function renderTop(room) {
 
   // ── Player cards ────────────────────────────────────────────────────────────
   const cards = participants.map((p, i) => {
-    const isCurrent = p.id === currentId
-    const isMe = p.id === user.id
-    const isReady = readyPlayers.includes(p.id)
+    const isCurrent  = p.id === currentId
+    const isMe       = p.id === user.id
+    const isReady    = readyPlayers.includes(p.id)
+    const isViewing  = phase === 'picking' && _viewingTeamOf === p.id
+    const isClickable = phase === 'picking'
+
+    const color = isViewing ? playerColor(p.id) : null
+    const viewStyle = isViewing
+      ? `style="border-color:${color};box-shadow:0 0 0 4px ${color}28"`
+      : ''
+
     return `
       <div class="participant-card
-        ${isCurrent ? ' participant-card-active' : ''}
-        ${isMe ? ' participant-card-me' : ''}
-        ${isReady && phase === 'lobby' ? ' participant-card-ready' : ''}">
+        ${isCurrent   ? ' participant-card-active'  : ''}
+        ${isMe        ? ' participant-card-me'       : ''}
+        ${isReady && phase === 'lobby' ? ' participant-card-ready' : ''}
+        ${isClickable ? ' participant-card-clickable' : ''}
+        ${isViewing   ? ' participant-card-viewing'  : ''}"
+        data-user-id="${p.id}"
+        ${viewStyle}>
         ${phase === 'picking' ? `<span class="pick-order-badge">${i + 1}</span>` : ''}
         ${isReady && phase === 'lobby' ? '<span class="ready-check">✓</span>' : ''}
         ${avatarHTML(p, 64)}
@@ -219,6 +286,30 @@ function renderTop(room) {
     ${actionArea}
   `)
 
+  // Player card clicks — toggle team view for other players in picking phase
+  if (phase === 'picking') {
+    top.querySelectorAll('.participant-card-clickable[data-user-id]').forEach(card => {
+      card.addEventListener('click', () => {
+        const uid = card.dataset.userId
+        _viewingTeamOf = (_viewingTeamOf === uid) ? null : uid
+        // Update card highlight immediately without full re-render
+        top.querySelectorAll('.participant-card[data-user-id]').forEach(c => {
+          const isNowViewing = _viewingTeamOf === c.dataset.userId
+          c.classList.toggle('participant-card-viewing', isNowViewing)
+          if (isNowViewing) {
+            const col = playerColor(c.dataset.userId)
+            c.style.borderColor = col
+            c.style.boxShadow = `0 0 0 4px ${col}28`
+          } else {
+            c.style.borderColor = ''
+            c.style.boxShadow   = ''
+          }
+        })
+        renderPickResults()
+      })
+    })
+  }
+
   document.querySelector('#ready-btn')?.addEventListener('click', () => {
     getSocket().emit('toggle-ready', { instanceId: sdk.instanceId })
   })
@@ -230,7 +321,7 @@ function renderTop(room) {
         .map(p => p.global_name || p.username)
       const plural = notReady.length > 1
       const msg = `<strong>${notReady.join(', ')}</strong> no ${plural ? 'están listos' : 'está listo'}.<br>¿Iniciar los picks de todas formas?`
-      const confirmed = await showConfirm(msg)
+      const confirmed = await showConfirm(msg, 'Iniciar de todas formas')
       if (!confirmed) return
     }
     getSocket().emit('start-picks', { instanceId: sdk.instanceId })
@@ -255,7 +346,8 @@ function getFilteredPokemon() {
   return _pokemonAll.filter(p => {
     const matchName = !q || p.name.toLowerCase().includes(q)
     const matchTier = !_pickTier || p.tier === _pickTier
-    return matchName && matchTier
+    const matchMega = !_pickMegaFilter || p.name.includes('-mega')
+    return matchName && matchTier && matchMega
   })
 }
 
@@ -293,6 +385,7 @@ function initPickerShell(container) {
         </select>
         <span id="pick-results-info" class="results-info" style="margin-left:auto"></span>
       </div>
+      <div id="pick-tier-slots"></div>
       <div id="pick-results"></div>
     </div>
   `
@@ -301,7 +394,7 @@ function initPickerShell(container) {
     _pickSearch = e.target.value; _pickPage = 1; renderPickResults()
   })
   document.querySelector('#pick-tier').addEventListener('change', e => {
-    _pickTier = e.target.value; _pickPage = 1; renderPickResults()
+    _pickTier = e.target.value; _pickMegaFilter = false; _pickPage = 1; renderPickResults()
   })
 
   // Event delegation for picks — on container so it survives grid re-renders
@@ -317,8 +410,121 @@ function initPickerShell(container) {
   })
 }
 
+function renderTierSlotsRow(userId, clickable = false) {
+  const el = document.querySelector('#pick-tier-slots')
+  if (!el) return
+
+  const allowedTiers = Object.entries(_tierSlots).filter(([, max]) => max > 0)
+  if (!allowedTiers.length && _maxMegas === 0) { el.innerHTML = ''; return }
+
+  const playerPicks = _picks.filter(pk => pk.userId === userId)
+  const byTier = {}
+  for (const pk of playerPicks) {
+    if (pk.tier) byTier[pk.tier] = (byTier[pk.tier] || 0) + 1
+  }
+  const megaCount = playerPicks.filter(pk => pk.pokemonName?.includes('-mega')).length
+
+  el.innerHTML = `
+    <div class="pick-tier-slots${clickable ? ' pick-tier-slots-interactive' : ''}">
+      ${allowedTiers.map(([tier, max]) => {
+        const used = byTier[tier] ?? 0
+        const full = used >= max
+        const active = _pickTier === tier
+        return `
+          <span class="pick-tier-chip${full ? ' pick-tier-chip-full' : ''}${active ? ' pick-tier-chip-active' : ''}" data-tier="${tier}">
+            <span class="tier-badge ${tier}">${tier}</span>
+            <span class="pick-tier-chip-count">${used}/${max}</span>
+          </span>`
+      }).join('')}
+      ${_maxMegas > 0 ? `
+        <span class="pick-tier-chip pick-tier-chip-mega${megaCount >= _maxMegas ? ' pick-tier-chip-full' : ''}${_pickMegaFilter ? ' pick-tier-chip-active' : ''}">
+          <span class="tier-badge tier-mega">mega</span>
+          <span class="pick-tier-chip-count">${megaCount}/${_maxMegas}</span>
+        </span>` : ''}
+    </div>
+  `
+
+  if (!clickable) return
+
+  el.querySelectorAll('.pick-tier-chip[data-tier]').forEach(chip => {
+    chip.addEventListener('click', () => {
+      _pickTier = (_pickTier === chip.dataset.tier) ? '' : chip.dataset.tier
+      _pickPage = 1
+      const sel = document.querySelector('#pick-tier')
+      if (sel) sel.value = _pickTier
+      renderPickResults()
+    })
+  })
+
+  const megaChip = el.querySelector('.pick-tier-chip-mega')
+  if (megaChip) {
+    megaChip.addEventListener('click', () => {
+      _pickMegaFilter = !_pickMegaFilter
+      _pickPage = 1
+      renderPickResults()
+    })
+  }
+}
+
 // Only replaces the results grid — never touches the search input
 function renderPickResults() {
+  const container = document.querySelector('#pick-results')
+  if (!container) return
+
+  // ── Team view mode ──────────────────────────────────────────────────────────
+  if (_viewingTeamOf) {
+    renderTierSlotsRow(_viewingTeamOf, false)
+    const playerPicks = _picks.filter(pk => pk.userId === _viewingTeamOf)
+    const player = _pickOrder.find(p => p.id === _viewingTeamOf)
+    const color  = playerColor(_viewingTeamOf)
+    const name   = player?.global_name || player?.username || '?'
+    const empty  = Math.max(0, _teamSize - playerPicks.length)
+
+    const infoEl = document.querySelector('#pick-results-info')
+    if (infoEl) infoEl.textContent = ''
+
+    container.innerHTML = `
+      <div class="team-view-banner" style="border-color:${color};background:${color}12">
+        <span class="team-view-label">
+          Equipo de <strong>${name}</strong>
+          <span class="team-view-count" style="color:${color}">${playerPicks.length}/${_teamSize}</span>
+        </span>
+        <button class="team-view-close" id="team-view-close">✕ Cerrar</button>
+      </div>
+      <div class="pokemon-grid">
+        ${playerPicks.map(pk => `
+          <div class="pokemon-card">
+            <div class="pokemon-card-sprite-wrap">
+              <img src="/api/sprite/${pk.pokemonId}" alt="${pk.pokemonName}" width="72" height="72" />
+            </div>
+            <div class="pokemon-card-name">${pk.pokemonName}</div>
+            <div class="pokemon-card-tier">${tierBadge(pk.tier)}</div>
+          </div>
+        `).join('')}
+        ${Array.from({ length: empty }).map(() =>
+          `<div class="pokemon-card pokemon-card-empty-slot"></div>`
+        ).join('')}
+        ${playerPicks.length === 0
+          ? `<p class="empty-state" style="grid-column:1/-1;padding:2rem 0">Aún no ha elegido ningún Pokémon.</p>`
+          : ''}
+      </div>
+    `
+
+    document.querySelector('#team-view-close').addEventListener('click', () => {
+      _viewingTeamOf = null
+      // Remove highlight from all player cards without re-rendering the top section
+      document.querySelectorAll('.participant-card[data-user-id]').forEach(c => {
+        c.classList.remove('participant-card-viewing')
+        c.style.borderColor = ''
+        c.style.boxShadow   = ''
+      })
+      renderPickResults()
+    })
+    return
+  }
+
+  // ── Normal grid mode ────────────────────────────────────────────────────────
+  renderTierSlotsRow(_myId, true)
   const filtered = getFilteredPokemon()
   const totalPages = Math.max(1, Math.ceil(filtered.length / PICK_PAGE_SIZE))
   if (_pickPage > totalPages) _pickPage = 1
@@ -330,23 +536,36 @@ function renderPickResults() {
   const tierEl = document.querySelector('#pick-tier')
   if (tierEl && tierEl.value !== _pickTier) tierEl.value = _pickTier
 
-  const container = document.querySelector('#pick-results')
-  if (!container) return
-
   const currentId = currentPickerId(_pickOrder, _currentPickIndex)
-  const isMyTurn = currentId === _myId
+  const isMyTurn  = currentId === _myId
+
+  // Compute my tier usage for restriction checks
+  const myPicksByTier = {}
+  let myMegaCount = 0
+  if (isMyTurn) {
+    for (const pk of _picks.filter(pk => pk.userId === _myId)) {
+      if (pk.tier) myPicksByTier[pk.tier] = (myPicksByTier[pk.tier] || 0) + 1
+      if (pk.pokemonName?.includes('-mega')) myMegaCount++
+    }
+  }
 
   container.innerHTML = `
     <div class="pokemon-grid">
       ${page.map(p => {
         const pick = _picks.find(pk => pk.pokemonId === p.id)
         const isPicked = !!pick
-        const isPickable = isMyTurn && !isPicked
-        const color = isPicked ? playerColor(pick.userId) : null
+        const color    = isPicked ? playerColor(pick.userId) : null
 
-        const cls = `pokemon-card${isPicked ? ' pokemon-card-picked' : ''}${isPickable ? ' pokemon-card-pickable' : ''}`
+        const isMega      = p.name.includes('-mega')
+        const tierLimit   = _tierSlots[p.tier] ?? 0
+        const tierFull    = (myPicksByTier[p.tier] ?? 0) >= tierLimit
+        const megaFull    = isMega && myMegaCount >= _maxMegas
+        const isDisabled  = isMyTurn && !isPicked && (tierFull || megaFull)
+        const isPickable  = isMyTurn && !isPicked && !isDisabled
+
+        const cls   = `pokemon-card${isPicked ? ' pokemon-card-picked' : ''}${isPickable ? ' pokemon-card-pickable' : ''}${isDisabled ? ' pokemon-card-disabled' : ''}`
         const style = isPicked ? `style="background:${color}28;border-color:${color}"` : ''
-        const data = isPickable ? `data-id="${p.id}" data-name="${p.name}" data-tier="${p.tier || ''}"` : ''
+        const data  = isPickable ? `data-id="${p.id}" data-name="${p.name}" data-tier="${p.tier || ''}"` : ''
 
         return `
           <div class="${cls}" ${style} ${data}>

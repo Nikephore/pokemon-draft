@@ -10,6 +10,7 @@ import {
   getDraftsByUser,
   getTeamsWithPicks,
   getAllPicksForDraft,
+  deleteDraft,
   insertDraft,
   updateDraftPhase,
   updatePickState,
@@ -142,6 +143,20 @@ app.get("/api/pokemon", async (req, res) => {
   res.json(pokemonCache);
 });
 
+app.delete("/api/drafts/:instanceId", (req, res) => {
+  const { userId } = req.query
+  if (!userId) return res.status(400).json({ error: 'userId required' })
+
+  const dbDraft = getDraftByInstance.get(req.params.instanceId)
+  if (!dbDraft) return res.status(404).json({ error: 'Draft not found' })
+  if (dbDraft.host_id !== userId) return res.status(403).json({ error: 'Not the host' })
+
+  deleteDraft.run(req.params.instanceId, userId)
+  rooms.delete(req.params.instanceId)
+
+  res.json({ ok: true })
+})
+
 app.get("/api/drafts/mine", (req, res) => {
   const { userId } = req.query
   if (!userId) return res.status(400).json({ error: 'userId required' })
@@ -235,6 +250,7 @@ for (const d of getActiveDrafts.all()) {
         teamSize: d.team_size,
         coins: d.coins,
         tierSlots: JSON.parse(d.tier_slots),
+        maxMegas: d.max_megas ?? 0,
       },
       phase: d.phase,
       pickOrder: d.pick_order ? JSON.parse(d.pick_order) : [],
@@ -293,6 +309,7 @@ io.on("connection", socket => {
       team_size: config.teamSize,
       coins: config.coins,
       tier_slots: JSON.stringify(config.tierSlots),
+      max_megas: config.maxMegas ?? 0,
       phase: 'lobby',
     })
 
@@ -362,6 +379,20 @@ io.on("connection", socket => {
     // Reject if already picked
     if (!room.draft.picks) room.draft.picks = []
     if (room.draft.picks.some(pk => pk.pokemonId === pokemonId)) return
+
+    // Validate tier slot restriction
+    const tierSlots = room.draft.config?.tierSlots ?? {}
+    if (tier && tierSlots[tier] !== undefined) {
+      const myTierCount = room.draft.picks.filter(pk => pk.userId === userId && pk.tier === tier).length
+      if (myTierCount >= tierSlots[tier]) return
+    }
+
+    // Validate mega restriction
+    if (pokemonName.includes('-mega')) {
+      const maxMegas = room.draft.config?.maxMegas ?? 0
+      const myMegaCount = room.draft.picks.filter(pk => pk.userId === userId && pk.pokemonName?.includes('-mega')).length
+      if (myMegaCount >= maxMegas) return
+    }
 
     const pickIdx = room.draft.currentPickIndex
     room.draft.picks.push({ pokemonId, pokemonName, tier, userId, pickOrder: pickIdx })

@@ -1,3 +1,5 @@
+import { showConfirm } from './dom.js'
+
 const PLAYER_COLORS = [
   '#e53935','#1e88e5','#43a047','#fb8c00',
   '#8e24aa','#00acc1','#f4511e','#795548',
@@ -35,6 +37,8 @@ async function renderList() {
       return
     }
 
+    const myId = _discordCtx.user.id
+
     app.innerHTML = `
       <div class="back-bar"><a class="back-link" href="#lobby">← Volver</a></div>
       <h1>Mis Drafts</h1>
@@ -44,6 +48,9 @@ async function renderList() {
             <div class="draft-list-card-main">
               <span class="draft-list-name">${d.name}</span>
               <span class="draft-phase-chip draft-phase-chip-${d.phase}">${phaseLabel(d.phase)}</span>
+              ${d.host_id === myId ? `
+                <button class="draft-delete-btn" data-instance="${d.instance_id}">Eliminar</button>
+              ` : ''}
             </div>
             <div class="draft-list-card-meta">
               <span>${d.participant_count} jugadores · ${d.team_size} Pokémon/equipo</span>
@@ -56,6 +63,25 @@ async function renderList() {
 
     app.querySelectorAll('.draft-list-card').forEach(card => {
       card.addEventListener('click', () => renderDetail(card.dataset.instance))
+    })
+
+    app.querySelectorAll('.draft-delete-btn').forEach(btn => {
+      btn.addEventListener('click', async e => {
+        e.stopPropagation()
+        const instanceId = btn.dataset.instance
+        const confirmed = await showConfirm(
+          '¿Eliminar este draft permanentemente? Se borrarán todos los equipos y picks asociados.',
+          'Eliminar'
+        )
+        if (!confirmed) return
+        try {
+          const res = await fetch(`/api/drafts/${instanceId}?userId=${myId}`, { method: 'DELETE' })
+          if (!res.ok) throw new Error()
+          renderList()
+        } catch {
+          alert('No se pudo eliminar el draft.')
+        }
+      })
     })
   } catch {
     app.innerHTML = `

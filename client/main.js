@@ -2,18 +2,20 @@ import './style.css'
 import { initDiscord } from './discord.js'
 import { init as initLobby } from './lobby.js'
 import { init as initDraftLobby } from './draft-lobby.js'
+import { init as initJoinDraft } from './join-draft.js'
 import { init as initPokemonTable } from './pokemon-table.js'
+import { init as initDraftHistory } from './draft-history.js'
 
 let discordCtx = null
 
 async function bootstrap() {
-  document.querySelector('#app').innerHTML = `<p class="loading">Conectando...</p>`
+  const app = document.querySelector('#app')
+  app.innerHTML = `<p class="loading">Conectando con Discord...</p>`
   try {
     discordCtx = await initDiscord()
   } catch (err) {
-    document.querySelector('#app').innerHTML = `
-      <p style="color:#ff6b6b">Error al conectar con Discord: ${err.message}</p>
-    `
+    app.innerHTML = `<p class="error-msg">Error: ${err.message}</p>
+                     <pre class="error-stack">${err.stack}</pre>`
     return
   }
   handleRoute()
@@ -24,16 +26,9 @@ function handleRoute() {
   if (page === 'lobby')             initLobby(discordCtx)
   else if (page === 'create-draft') initDraftLobby(discordCtx)
   else if (page === 'pokemon-table') initPokemonTable(discordCtx)
-  else if (page === 'join-draft')   renderJoinDraft()
+  else if (page === 'join-draft')    initJoinDraft(discordCtx)
+  else if (page === 'draft-history') initDraftHistory(discordCtx)
   else initLobby(discordCtx)
-}
-
-function renderJoinDraft() {
-  document.querySelector('#app').innerHTML = `
-    <div class="back-bar"><a class="back-link" href="#lobby">← Volver</a></div>
-    <h1>Pokémon Draft</h1>
-    <p style="opacity:0.5">Unirse a un draft — próximamente</p>
-  `
 }
 
 window.addEventListener('hashchange', handleRoute)

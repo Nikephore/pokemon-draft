@@ -1,31 +1,36 @@
-import {defineConfig} from 'vite';
+import { defineConfig, loadEnv } from 'vite';
 
-const isDiscordMode = process.env.DISCORD_MODE === 'true';
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, '../', '')
+  const isDiscordMode = env.DISCORD_MODE === 'true'
+  const tunnelHost = env.TUNNEL_HOST
 
-// https://vitejs.dev/config/
-export default defineConfig({
-  envDir: '../',
-  server: {
-    proxy: {
-      '/api': {
-        target: 'http://localhost:3001',
-        changeOrigin: true,
-        secure: false,
-        ws: true,
-      },
-      '/socket.io': {
-        target: 'http://localhost:3001',
-        changeOrigin: true,
-        ws: true,
-        configure: proxy => {
-          proxy.on('error', err => {
-            if (!['ECONNABORTED', 'ECONNRESET'].includes(err.code)) {
-              console.error('socket.io proxy error:', err)
-            }
-          })
+  return {
+    envDir: '../',
+    server: {
+      host: '127.0.0.1',
+      allowedHosts: tunnelHost ? [tunnelHost] : [],
+      proxy: {
+        '/api': {
+          target: 'http://localhost:3001',
+          changeOrigin: true,
+          secure: false,
+          ws: true,
+        },
+        '/socket.io': {
+          target: 'http://localhost:3001',
+          changeOrigin: true,
+          ws: true,
+          configure: proxy => {
+            proxy.on('error', err => {
+              if (!['ECONNABORTED', 'ECONNRESET'].includes(err.code)) {
+                console.error('socket.io proxy error:', err)
+              }
+            })
+          },
         },
       },
+      hmr: isDiscordMode ? false : true,
     },
-    hmr: isDiscordMode ? { clientPort: 443 } : true,
-  },
-});
+  }
+})

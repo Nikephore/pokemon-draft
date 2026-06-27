@@ -1,8 +1,10 @@
 import { getSocket } from './socket.js'
+import { setHTML } from './dom.js'
 
 const TIERS = ['Ubers', 'OU', 'UUBL', 'UU', 'RUBL', 'RU', 'NUBL', 'NU', 'PUBL', 'PU', 'ZU', 'NFE', 'LC']
 
 const state = {
+  name: '',
   teamSize: 6,
   coins: 100,
   tierSlots: Object.fromEntries(TIERS.map(t => [t, 0])),
@@ -22,23 +24,29 @@ function render() {
     <div class="tier-slot-row">
       <span class="tier-badge ${t}">${t}</span>
       <input
-        type="number"
+        type="range"
         class="tier-slot-input"
         data-tier="${t}"
         min="0"
         max="${state.teamSize}"
         value="${state.tierSlots[t]}"
       />
+      <span class="tier-slot-val">${state.tierSlots[t]}</span>
     </div>
   `).join('')
 
-  document.querySelector('#app').innerHTML = `
+  setHTML(document.querySelector('#app'), `
     <div class="back-bar">
       <a class="back-link" href="#lobby">← Volver</a>
     </div>
     <h1>Pokémon Draft</h1>
     <div class="draft-form">
       <h2 class="draft-form-title">Crear Draft</h2>
+
+      <div class="form-group">
+        <label class="form-label">Nombre del Draft</label>
+        <input id="draft-name" class="form-input" type="text" maxlength="40" placeholder="Ej: Liga de Tontopollas de España" value="${state.name}" />
+      </div>
 
       <div class="form-row">
         <div class="form-group">
@@ -58,6 +66,14 @@ function render() {
             ${total} / ${state.teamSize}
           </span>
         </div>
+        <div class="tier-progress-wrap">
+          <div class="tier-progress-bar">
+            <div class="tier-progress-fill" style="
+              width: ${Math.min(100, state.teamSize > 0 ? (total / state.teamSize) * 100 : 0)}%;
+              background: ${isValid ? '#2e7d32' : total > state.teamSize ? '#cc0000' : '#f9a825'};
+            "></div>
+          </div>
+        </div>
         <div class="tier-slots-grid">${tierRows}</div>
       </div>
 
@@ -65,7 +81,11 @@ function render() {
         Crear Draft
       </button>
     </div>
-  `
+  `)
+
+  document.querySelector('#draft-name').addEventListener('input', e => {
+    state.name = e.target.value
+  })
 
   document.querySelector('#team-size').addEventListener('input', e => {
     state.teamSize = Math.max(1, parseInt(e.target.value) || 1)
@@ -78,12 +98,22 @@ function render() {
 
   document.querySelectorAll('.tier-slot-input').forEach(input => {
     input.addEventListener('input', e => {
-      state.tierSlots[e.target.dataset.tier] = Math.max(0, parseInt(e.target.value) || 0)
+      const val = parseInt(e.target.value) || 0
+      state.tierSlots[e.target.dataset.tier] = val
+      const valSpan = e.target.nextElementSibling
+      if (valSpan) valSpan.textContent = val
       const total = tierTotal()
       const counter = document.querySelector('.tier-counter')
       if (counter) {
         counter.textContent = `${total} / ${state.teamSize}`
         counter.className = `tier-counter ${total === state.teamSize ? 'tier-counter-ok' : 'tier-counter-err'}`
+      }
+      const fill = document.querySelector('.tier-progress-fill')
+      if (fill) {
+        const pct = state.teamSize > 0 ? Math.min(100, (total / state.teamSize) * 100) : 0
+        const isValid = total === state.teamSize
+        fill.style.width = `${pct}%`
+        fill.style.background = isValid ? '#2e7d32' : total > state.teamSize ? '#cc0000' : '#f9a825'
       }
       const btn = document.querySelector('#create-btn')
       if (btn) btn.disabled = total !== state.teamSize
@@ -99,6 +129,7 @@ function handleCreate() {
   const socket = getSocket()
 
   const config = {
+    name: state.name.trim() || 'Draft',
     teamSize: state.teamSize,
     coins: state.coins,
     tierSlots: { ...state.tierSlots },

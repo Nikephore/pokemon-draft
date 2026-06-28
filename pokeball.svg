@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <defs>
+    <!-- Clip fills to r=43 so the outer stroke (r=46, width=6) sits flush outside -->
+    <clipPath id="ball">
+      <circle cx="50" cy="50" r="43"/>
+    </clipPath>
+    <!-- Gloss gradient for the red half -->
+    <radialGradient id="gloss" cx="38%" cy="32%" r="55%">
+      <stop offset="0%"   stop-color="#ff6b6b" stop-opacity="0.6"/>
+      <stop offset="100%" stop-color="#cc0000" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Red top half -->
+  <rect x="7" y="7" width="86" height="43" fill="#e3030f" clip-path="url(#ball)"/>
+
+  <!-- White bottom half -->
+  <rect x="7" y="50" width="86" height="43" fill="white" clip-path="url(#ball)"/>
+
+  <!-- Black middle band -->
+  <rect x="7" y="44" width="86" height="12" fill="#111111" clip-path="url(#ball)"/>
+
+  <!-- Gloss on red -->
+  <rect x="7" y="7" width="86" height="43" fill="url(#gloss)" clip-path="url(#ball)"/>
+
+  <!-- Center button — black ring -->
+  <circle cx="50" cy="50" r="11" fill="#111111"/>
+  <!-- Center button — white fill -->
+  <circle cx="50" cy="50" r="7" fill="white"/>
+  <!-- Center button — inner highlight -->
+  <circle cx="52" cy="48" r="2.5" fill="rgba(255,255,255,0.55)"/>
+
+  <!-- Outer border drawn last, flush against clip boundary (inner edge = r43, outer = r49) -->
+  <circle cx="50" cy="50" r="46" fill="none" stroke="#111111" stroke-width="6"/>
+</svg>

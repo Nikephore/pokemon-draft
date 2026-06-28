@@ -5,6 +5,8 @@ import { init as initDraftLobby } from './draft-lobby.js'
 import { init as initJoinDraft } from './join-draft.js'
 import { init as initPokemonTable } from './pokemon-table.js'
 import { init as initDraftHistory } from './draft-history.js'
+import { init as initPresets } from './presets.js'
+import { init as initPresetEditor } from './preset-editor.js'
 
 let discordCtx = null
 
@@ -22,12 +24,20 @@ async function bootstrap() {
 }
 
 function handleRoute() {
-  const page = location.hash.replace('#', '') || 'lobby'
-  if (page === 'lobby')             initLobby(discordCtx)
-  else if (page === 'create-draft') initDraftLobby(discordCtx)
-  else if (page === 'pokemon-table') initPokemonTable(discordCtx)
-  else if (page === 'join-draft')    initJoinDraft(discordCtx)
-  else if (page === 'draft-history') initDraftHistory(discordCtx)
+  const hash = location.hash.replace('#', '') || 'lobby'
+  if (hash === 'lobby')              initLobby(discordCtx)
+  else if (hash === 'create-draft')  initDraftLobby(discordCtx)
+  else if (hash === 'pokemon-table') initPokemonTable(discordCtx)
+  else if (hash === 'draft-history') initDraftHistory(discordCtx)
+  else if (hash.startsWith('join-draft/')) {
+    const draftInstanceId = hash.slice('join-draft/'.length)
+    initJoinDraft(discordCtx, draftInstanceId)
+  }
+  else if (hash === 'presets')          initPresets(discordCtx)
+  else if (hash.startsWith('preset/')) {
+    const presetId = hash.slice('preset/'.length)
+    initPresetEditor(discordCtx, presetId)
+  }
   else initLobby(discordCtx)
 }
 

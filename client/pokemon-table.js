@@ -153,6 +153,7 @@ function syncControlStates() {
 
 // Only replaces the results section — never touches the search input
 function renderResults() {
+  syncControlStates()
   const filtered = getFiltered()
   const PAGE_SIZE = viewMode === 'grid' ? PAGE_SIZE_GRID : PAGE_SIZE_TABLE
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))

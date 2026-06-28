@@ -19,8 +19,38 @@ import {
   getTeamId,
   insertPick,
   getTeamPokemon,
+  getPresetsByInstance,
+  getPresetById,
+  insertPreset,
+  updatePreset,
+  deletePreset,
 } from "./db.js";
 dotenv.config({ path: "../.env" });
+
+const TIER_RANK = { Ubers:0, OU:1, UUBL:2, UU:3, RUBL:4, RU:5, NUBL:6, NU:7, PUBL:8, PU:9, ZU:10, NFE:11, LC:12 }
+
+function canPickTier(newTier, myPickTiers, tierSlots) {
+  if (!newTier || TIER_RANK[newTier] === undefined) {
+    return (tierSlots[newTier] ?? 0) > myPickTiers.filter(t => t === newTier).length
+  }
+  const allRanks = [...myPickTiers.filter(t => TIER_RANK[t] !== undefined), newTier]
+    .map(t => TIER_RANK[t]).sort((a, b) => a - b)
+  const slotRanks = []
+  for (const [t, count] of Object.entries(tierSlots)) {
+    if (TIER_RANK[t] !== undefined) for (let i = 0; i < (count || 0); i++) slotRanks.push(TIER_RANK[t])
+  }
+  slotRanks.sort((a, b) => a - b)
+  const used = new Array(slotRanks.length).fill(false)
+  for (const pr of allRanks) {
+    let best = -1
+    for (let i = 0; i < slotRanks.length; i++) {
+      if (!used[i] && slotRanks[i] <= pr && (best === -1 || slotRanks[i] > slotRanks[best])) best = i
+    }
+    if (best === -1) return false
+    used[best] = true
+  }
+  return true
+}
 
 const app = express();
 const httpServer = createServer(app);
@@ -143,6 +173,57 @@ app.get("/api/pokemon", async (req, res) => {
   res.json(pokemonCache);
 });
 
+// ── Presets API ───────────────────────────────────────────────────────────────
+
+app.get('/api/presets', (req, res) => {
+  const { instanceId } = req.query
+  if (!instanceId) return res.status(400).json({ error: 'instanceId required' })
+  res.json(getPresetsByInstance.all(instanceId))
+})
+
+app.get('/api/presets/:id', (req, res) => {
+  const preset = getPresetById.get(parseInt(req.params.id))
+  if (!preset) return res.status(404).json({ error: 'Not found' })
+  res.json(preset)
+})
+
+app.post('/api/presets', (req, res) => {
+  const { instanceId, name, maxPoints, createdBy } = req.body
+  if (!instanceId || !name || !maxPoints) return res.status(400).json({ error: 'Missing fields' })
+  const { lastInsertRowid } = insertPreset.run({
+    instance_id: instanceId, name, max_points: parseInt(maxPoints),
+    status: 'draft', assignments: '{}', created_by: createdBy ?? null,
+  })
+  res.json(getPresetById.get(lastInsertRowid))
+})
+
+app.put('/api/presets/:id', (req, res) => {
+  const id = parseInt(req.params.id)
+  const preset = getPresetById.get(id)
+  if (!preset) return res.status(404).json({ error: 'Not found' })
+  const { name, assignments, status, userId } = req.body
+  if (preset.created_by && preset.created_by !== userId) return res.status(403).json({ error: 'Not the creator' })
+  updatePreset.run({
+    id,
+    name: name ?? preset.name,
+    assignments: assignments !== undefined ? JSON.stringify(assignments) : preset.assignments,
+    status: status ?? preset.status,
+  })
+  res.json(getPresetById.get(id))
+})
+
+app.delete('/api/presets/:id', (req, res) => {
+  const id = parseInt(req.params.id)
+  const { userId } = req.query
+  const preset = getPresetById.get(id)
+  if (!preset) return res.status(404).json({ error: 'Not found' })
+  if (preset.created_by && preset.created_by !== userId) return res.status(403).json({ error: 'Not the creator' })
+  deletePreset.run(id)
+  res.json({ ok: true })
+})
+
+// ── Drafts API ────────────────────────────────────────────────────────────────
+
 app.delete("/api/drafts/:instanceId", (req, res) => {
   const { userId } = req.query
   if (!userId) return res.status(400).json({ error: 'userId required' })
@@ -232,215 +313,537 @@ function currentPickerId(pickOrder, idx) {
 // rooms: Map<instanceId, { host: userId, participants: User[], draft: Draft|null }>
 const rooms = new Map();
 
-// Restore active drafts from DB on startup so data survives server restarts
+// Active auction setTimeout handles — kept outside draft object so they don't serialize
+const auctionTimers = new Map() // key: draftInstanceId
+
+// Restore active drafts from DB — group by discord_instance_id to support multiple drafts per room
 for (const d of getActiveDrafts.all()) {
+  const channelId = d.discord_instance_id || d.instance_id
+  if (!rooms.has(channelId)) {
+    rooms.set(channelId, { host: d.host_id, drafts: {}, configuringUsers: [] })
+  }
   const participants = getParticipants.all(d.id).map(p => ({
-    id: p.user_id,
-    username: p.username,
-    global_name: p.global_name,
-    avatar: p.avatar,
-    discriminator: '0',
+    id: p.user_id, username: p.username, global_name: p.global_name,
+    avatar: p.avatar, discriminator: '0',
   }))
-  rooms.set(d.instance_id, {
-    host: d.host_id,
-    participants,
-    draft: {
-      config: {
-        name: d.name,
-        teamSize: d.team_size,
-        coins: d.coins,
-        tierSlots: JSON.parse(d.tier_slots),
-        maxMegas: d.max_megas ?? 0,
-      },
-      phase: d.phase,
-      pickOrder: d.pick_order ? JSON.parse(d.pick_order) : [],
-      currentPickIndex: d.current_pick_index ?? 0,
-      picks: getAllPicksForDraft.all(d.id),
+  rooms.get(channelId).drafts[d.instance_id] = {
+    id: d.id,
+    config: {
+      name: d.name, teamSize: d.team_size, coins: d.coins,
+      tierSlots: JSON.parse(d.tier_slots), maxMegas: d.max_megas ?? 0,
+      draftType: d.type ?? 'clasico',
+      tierCosts: d.tier_costs ? JSON.parse(d.tier_costs) : {},
+      presetId: d.preset_id ?? null,
+      presetAssignments: d.preset_assignments ? JSON.parse(d.preset_assignments) : null,
+      minTeamSize: d.min_team_size ?? 0,
+      minBid: d.min_bid ?? 0,
+      auctionTimer: d.auction_timer ?? 10,
     },
-  })
+    phase: d.phase,
+    participants,
+    pickOrder: d.pick_order ? JSON.parse(d.pick_order) : [],
+    currentPickIndex: d.current_pick_index ?? 0,
+    picks: getAllPicksForDraft.all(d.id),
+    readyPlayers: [],
+    creatorId: d.host_id,
+  }
 }
-console.log(`Restored ${rooms.size} active draft(s) from DB`)
+console.log(`Restored ${rooms.size} room(s) from DB`)
+
+function isPlayerDone(draft, userId) {
+  const picks  = draft.picks.filter(pk => pk.userId === userId)
+  const myCount = picks.length
+  if (myCount >= draft.config.teamSize) return true
+  const minBid      = draft.config.minBid ?? 0
+  const minTeamSize = draft.config.minTeamSize ?? 0
+  if (minBid > 0 && minTeamSize > 0 && myCount >= minTeamSize) {
+    const mySpent = picks.reduce((s, pk) => s + (pk.cost ?? 0), 0)
+    if (draft.config.coins - mySpent < minBid) return true
+  }
+  return false
+}
+
+async function endAuction(instanceId, draftInstanceId) {
+  const room = rooms.get(instanceId)
+  const draft = room?.drafts?.[draftInstanceId]
+  if (!draft?.auctionState) return
+
+  clearTimeout(auctionTimers.get(draftInstanceId))
+  auctionTimers.delete(draftInstanceId)
+
+  const { pokemonId, pokemonName, tier, currentBid, highestBidderId } = draft.auctionState
+  draft.auctionState = null
+
+  const pickIdx = draft.currentPickIndex
+  draft.picks.push({ pokemonId, pokemonName, tier, userId: highestBidderId, pickOrder: pickIdx, cost: currentBid })
+
+  const dbDraft = getDraftByInstance.get(draftInstanceId)
+  if (dbDraft) {
+    const teamRow = getTeamId.get(dbDraft.id, highestBidderId)
+    if (teamRow) insertPick.run({ team_id: teamRow.id, pokemon_id: pokemonId, pokemon_name: pokemonName, tier: tier ?? null, cost: currentBid, pick_order: pickIdx + 1 })
+  }
+
+  // Advance snake, skipping players who are done (maxTeamSize OR broke with ≥ minTeamSize)
+  let nextIdx = draft.currentPickIndex + 1
+  const n = draft.pickOrder.length
+  let allDone = false
+
+  for (let attempts = 0; attempts <= n * 2; attempts++) {
+    allDone = draft.pickOrder.every(p => isPlayerDone(draft, p.id))
+    if (allDone) break
+    const nextNomId = currentPickerId(draft.pickOrder, nextIdx)
+    if (!isPlayerDone(draft, nextNomId)) break
+    nextIdx++
+  }
+
+  draft.currentPickIndex = nextIdx
+
+  if (allDone) {
+    draft.phase = 'complete'
+    updateDraftPhase.run('complete', draftInstanceId)
+  } else {
+    updatePickState.run({ phase: draft.phase, pick_order: JSON.stringify(draft.pickOrder), current_pick_index: draft.currentPickIndex, instance_id: draftInstanceId })
+  }
+
+  console.log(`Auction ended: ${pokemonName} won by ${highestBidderId} for ${currentBid}`)
+  broadcastRoomState(instanceId)
+  if (draft.phase === 'picking') {
+    const nextNominator = currentPickerId(draft.pickOrder, draft.currentPickIndex)
+    if (nextNominator && !(await isUserConnected(instanceId, nextNominator))) {
+      await sendTurnDM(nextNominator, draft.config.name)
+    }
+  }
+}
 
 function broadcastRoomState(instanceId) {
-  const room = rooms.get(instanceId);
-  if (room) io.to(instanceId).emit("room-state", room);
+  const room = rooms.get(instanceId)
+  if (!room) return
+
+  // Inject secsLeft into any active auction so clients avoid clock-skew on timerEnd
+  const now = Date.now()
+  const hasAuction = Object.values(room.drafts).some(d => d.auctionState)
+  if (!hasAuction) {
+    io.to(instanceId).emit("room-state", room)
+    return
+  }
+
+  const drafts = Object.fromEntries(
+    Object.entries(room.drafts).map(([id, draft]) => {
+      if (!draft.auctionState) return [id, draft]
+      return [id, {
+        ...draft,
+        auctionState: {
+          ...draft.auctionState,
+          secsLeft: Math.max(0, (draft.auctionState.timerEnd - now) / 1000),
+        },
+      }]
+    })
+  )
+  io.to(instanceId).emit("room-state", { ...room, drafts })
+}
+
+async function isUserConnected(instanceId, userId) {
+  const sockets = await io.in(instanceId).fetchSockets()
+  return sockets.some(s => s.data.user?.id === userId)
+}
+
+async function sendTurnDM(userId, draftName) {
+  const token = process.env.DISCORD_BOT_TOKEN
+  if (!token) return
+  try {
+    const dmRes = await fetch('https://discord.com/api/v10/users/@me/channels', {
+      method: 'POST',
+      headers: { Authorization: `Bot ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ recipient_id: userId }),
+    })
+    const { id: channelId } = await dmRes.json()
+    if (!channelId) return
+    await fetch(`https://discord.com/api/v10/channels/${channelId}/messages`, {
+      method: 'POST',
+      headers: { Authorization: `Bot ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        content: `¡Es tu turno en el draft **${draftName}**! Entra a la actividad de Discord para hacer tu pick.`,
+      }),
+    })
+    console.log(`Turn DM sent to ${userId} for draft "${draftName}"`)
+  } catch (e) {
+    console.error(`DM failed for user ${userId}:`, e.message)
+  }
 }
 
 io.on("connection", socket => {
-  socket.on("join-room", ({ instanceId, user }) => {
-    socket.join(instanceId);
-    socket.data.instanceId = instanceId;
-    socket.data.user = user;
+  // View-only: subscribes to broadcasts without joining a draft
+  socket.on("view-room", ({ instanceId, user }) => {
+    socket.join(instanceId)
+    socket.data.instanceId = instanceId
+    if (user) socket.data.user = user
+    if (!rooms.has(instanceId)) {
+      rooms.set(instanceId, { host: user?.id, drafts: {}, configuringUsers: [] })
+      console.log(`Room created via lobby: ${instanceId}`)
+    }
+    const room = rooms.get(instanceId)
+    if (room) socket.emit("room-state", room)
+  })
+
+  // Join a specific draft within the room
+  socket.on("join-room", ({ instanceId, draftInstanceId, user }) => {
+    socket.join(instanceId)
+    socket.data.instanceId = instanceId
+    socket.data.draftInstanceId = draftInstanceId
+    socket.data.user = user
 
     if (!rooms.has(instanceId)) {
-      rooms.set(instanceId, { host: user.id, participants: [], draft: null });
-      console.log(`Room created: ${instanceId} by ${user.username}`);
+      rooms.set(instanceId, { host: user.id, drafts: {}, configuringUsers: [] })
+    }
+    const room = rooms.get(instanceId)
+    const draft = room.drafts[draftInstanceId]
+
+    // Only add to participants (and persist) if the draft is still in lobby phase
+    if (draft && draft.phase === 'lobby' && !draft.participants.find(p => p.id === user.id)) {
+      draft.participants.push(user)
+      console.log(`${user.username} joined draft ${draftInstanceId}`)
+
+      const dbDraft = getDraftByInstance.get(draftInstanceId)
+      if (dbDraft) {
+        upsertParticipant.run({ draft_id: dbDraft.id, user_id: user.id, username: user.username, global_name: user.global_name ?? null, avatar: user.avatar ?? null })
+      }
+    } else if (draft && draft.phase !== 'lobby') {
+      console.log(`${user.username} joined draft ${draftInstanceId} as spectator`)
     }
 
-    const room = rooms.get(instanceId);
-    if (!room.participants.find(p => p.id === user.id)) {
-      room.participants.push(user);
-      console.log(`${user.username} joined room ${instanceId}`);
+    broadcastRoomState(instanceId)
+  })
+
+  socket.on("start-configuring", ({ instanceId, user }) => {
+    const room = rooms.get(instanceId)
+    if (!room || !user?.id) return
+    socket.data.instanceId = instanceId
+    socket.data.user = user
+    socket.data.isConfiguring = true
+    room.configuringUsers ??= []
+    if (!room.configuringUsers.some(u => u.id === user.id)) {
+      room.configuringUsers.push(user)
+    }
+    broadcastRoomState(instanceId)
+  })
+
+  socket.on("stop-configuring", ({ instanceId, userId }) => {
+    const room = rooms.get(instanceId)
+    if (!room) return
+    room.configuringUsers = (room.configuringUsers ?? []).filter(u => u.id !== userId)
+    socket.data.isConfiguring = false
+    broadcastRoomState(instanceId)
+  })
+
+  socket.on("create-draft", ({ instanceId, draftInstanceId, config, user: eventUser }) => {
+    const room = rooms.get(instanceId)
+    if (!room) return
+    const creatorId = eventUser?.id ?? socket.data.user?.id
+    if (!creatorId) return
+    if (eventUser && !socket.data.user) socket.data.user = eventUser
+
+    room.drafts[draftInstanceId] = {
+      config, phase: "lobby", participants: [], picks: [],
+      readyPlayers: [creatorId],
+      creatorId,
+    }
+    console.log(`Draft ${draftInstanceId} created in room ${instanceId}`)
+
+    // For Puntos with preset: load and snapshot preset assignments
+    let presetAssignments = null
+    if (config.draftType === 'puntos' && config.presetId) {
+      const preset = getPresetById.get(config.presetId)
+      if (preset) {
+        presetAssignments = JSON.parse(preset.assignments)
+        config.presetAssignments = presetAssignments
+      }
     }
 
-    // If a draft already exists in DB for this instance, persist the participant
-    const dbDraft = getDraftByInstance.get(instanceId)
-    if (dbDraft) {
-      upsertParticipant.run({ draft_id: dbDraft.id, user_id: user.id, username: user.username, global_name: user.global_name ?? null, avatar: user.avatar ?? null })
-    }
-
-    broadcastRoomState(instanceId);
-  });
-
-  socket.on("create-draft", ({ instanceId, config }) => {
-    const room = rooms.get(instanceId);
-    if (!room) return;
-    if (room.draft) return; // draft already exists
-    if (room.host !== socket.data.user?.id) return; // only host can create
-
-    room.draft = { config, phase: "lobby", picks: [] };
-    console.log(`Draft created in room ${instanceId}`);
-
-    // Persist draft to DB
-    const { lastInsertRowid: draftId } = insertDraft.run({
-      instance_id: instanceId,
+    insertDraft.run({
+      instance_id: draftInstanceId,
+      discord_instance_id: instanceId,
       name: config.name,
-      host_id: room.host,
+      host_id: creatorId,
       team_size: config.teamSize,
+      min_team_size: config.minTeamSize ?? 0,
+      min_bid: config.minBid ?? 0,
+      auction_timer: config.auctionTimer ?? 10,
       coins: config.coins,
-      tier_slots: JSON.stringify(config.tierSlots),
+      tier_slots: JSON.stringify(config.tierSlots ?? {}),
       max_megas: config.maxMegas ?? 0,
+      type: config.draftType ?? 'clasico',
+      tier_costs: JSON.stringify(config.tierCosts ?? {}),
+      preset_id: config.presetId ?? null,
+      preset_assignments: presetAssignments ? JSON.stringify(presetAssignments) : null,
       phase: 'lobby',
     })
 
-    // Persist current participants
-    for (const p of room.participants) {
-      upsertParticipant.run({ draft_id: draftId, user_id: p.id, username: p.username, global_name: p.global_name ?? null, avatar: p.avatar ?? null })
-    }
+    broadcastRoomState(instanceId)
+  })
 
-    broadcastRoomState(instanceId);
-  });
-
-  socket.on("toggle-ready", ({ instanceId }) => {
+  socket.on("cancel-draft", ({ instanceId, draftInstanceId }) => {
     const room = rooms.get(instanceId)
-    if (!room?.draft) return
+    if (!room) return
+    const draft = room.drafts[draftInstanceId]
+    if (!draft) return
+    if (draft.creatorId !== socket.data.user?.id) return
+
+    clearTimeout(auctionTimers.get(draftInstanceId))
+    auctionTimers.delete(draftInstanceId)
+    delete room.drafts[draftInstanceId]
+    deleteDraft.run(draftInstanceId, draft.creatorId)
+
+    io.to(instanceId).emit('draft-cancelled', { draftInstanceId })
+    broadcastRoomState(instanceId)
+    console.log(`Draft ${draftInstanceId} cancelled by host in room ${instanceId}`)
+  })
+
+  socket.on("toggle-ready", ({ instanceId, draftInstanceId }) => {
+    const draft = rooms.get(instanceId)?.drafts?.[draftInstanceId]
+    if (!draft) return
     const userId = socket.data.user?.id
     if (!userId) return
 
-    if (!room.draft.readyPlayers) room.draft.readyPlayers = []
-    const idx = room.draft.readyPlayers.indexOf(userId)
-    if (idx === -1) room.draft.readyPlayers.push(userId)
-    else room.draft.readyPlayers.splice(idx, 1)
+    const idx = draft.readyPlayers.indexOf(userId)
+    if (idx === -1) draft.readyPlayers.push(userId)
+    else draft.readyPlayers.splice(idx, 1)
 
     broadcastRoomState(instanceId)
   })
 
-  socket.on("start-picks", ({ instanceId }) => {
-    const room = rooms.get(instanceId);
-    if (!room) return;
-    if (room.host !== socket.data.user?.id) return;
-    if (!room.draft || room.draft.phase !== "lobby") return;
+  socket.on("start-picks", async ({ instanceId, draftInstanceId }) => {
+    const room = rooms.get(instanceId)
+    if (!room) return
+    const draft = room.drafts[draftInstanceId]
+    if (draft?.creatorId !== socket.data.user?.id) return
+    if (!draft || draft.phase !== "lobby") return
 
-    // Shuffle participants randomly to determine pick order
-    const shuffled = [...room.participants].sort(() => Math.random() - 0.5);
-    room.draft.pickOrder = shuffled;
-    room.draft.currentPickIndex = 0;
-    room.draft.phase = "picking";
-    room.draft.readyPlayers = [];
+    const shuffled = [...draft.participants].sort(() => Math.random() - 0.5)
+    draft.pickOrder = shuffled
+    draft.currentPickIndex = 0
+    draft.phase = "picking"
+    draft.readyPlayers = []
 
-    console.log(`Picks started in room ${instanceId}, order: ${shuffled.map(p => p.username).join(" → ")}`);
+    console.log(`Picks started in draft ${draftInstanceId}: ${shuffled.map(p => p.username).join(" → ")}`)
 
-    const dbDraft = getDraftByInstance.get(instanceId);
+    const dbDraft = getDraftByInstance.get(draftInstanceId)
     if (dbDraft) {
-      updatePickState.run({
-        phase: "picking",
-        pick_order: JSON.stringify(shuffled),
-        current_pick_index: 0,
-        instance_id: instanceId,
-      });
-      for (const p of shuffled) {
-        insertTeam.run(dbDraft.id, p.id);
-      }
+      updatePickState.run({ phase: "picking", pick_order: JSON.stringify(shuffled), current_pick_index: 0, instance_id: draftInstanceId })
+      for (const p of shuffled) insertTeam.run(dbDraft.id, p.id)
     }
 
-    broadcastRoomState(instanceId);
-  });
+    broadcastRoomState(instanceId)
+    const firstPicker = shuffled[0]
+    if (firstPicker && !(await isUserConnected(instanceId, firstPicker.id))) {
+      await sendTurnDM(firstPicker.id, draft.config.name)
+    }
+  })
 
-  socket.on("pick-pokemon", ({ instanceId, pokemonId, pokemonName, tier }) => {
-    const room = rooms.get(instanceId)
-    if (!room?.draft || room.draft.phase !== 'picking') return
+  socket.on("pick-pokemon", async ({ instanceId, draftInstanceId, pokemonId, pokemonName, tier }) => {
+    const draft = rooms.get(instanceId)?.drafts?.[draftInstanceId]
+    if (!draft || draft.phase !== 'picking') return
 
     const userId = socket.data.user?.id
     if (!userId) return
+    if (userId !== currentPickerId(draft.pickOrder, draft.currentPickIndex)) return
+    if (draft.picks.some(pk => pk.pokemonId === pokemonId)) return
 
-    // Verify it's this player's turn
-    if (userId !== currentPickerId(room.draft.pickOrder, room.draft.currentPickIndex)) return
-
-    // Reject if already picked
-    if (!room.draft.picks) room.draft.picks = []
-    if (room.draft.picks.some(pk => pk.pokemonId === pokemonId)) return
-
-    // Validate tier slot restriction
-    const tierSlots = room.draft.config?.tierSlots ?? {}
-    if (tier && tierSlots[tier] !== undefined) {
-      const myTierCount = room.draft.picks.filter(pk => pk.userId === userId && pk.tier === tier).length
-      if (myTierCount >= tierSlots[tier]) return
+    // Tier slot restriction
+    const tierSlots = draft.config?.tierSlots ?? {}
+    if (Object.values(tierSlots).some(v => v > 0)) {
+      const myPickTiers = draft.picks.filter(pk => pk.userId === userId && pk.tier).map(pk => pk.tier)
+      if (!canPickTier(tier, myPickTiers, tierSlots)) return
     }
 
-    // Validate mega restriction
+    // Mega restriction
     if (pokemonName.includes('-mega')) {
-      const maxMegas = room.draft.config?.maxMegas ?? 0
-      const myMegaCount = room.draft.picks.filter(pk => pk.userId === userId && pk.pokemonName?.includes('-mega')).length
+      const maxMegas = draft.config?.maxMegas ?? 0
+      const myMegaCount = draft.picks.filter(pk => pk.userId === userId && pk.pokemonName?.includes('-mega')).length
       if (myMegaCount >= maxMegas) return
     }
 
-    const pickIdx = room.draft.currentPickIndex
-    room.draft.picks.push({ pokemonId, pokemonName, tier, userId, pickOrder: pickIdx })
-    room.draft.currentPickIndex++
+    // Puntos: validate budget and eligibility
+    let pickCost = null
+    if (draft.config?.draftType === 'puntos') {
+      const presetAssignments = draft.config?.presetAssignments
+      if (presetAssignments) {
+        // Preset-based: cost per pokémon
+        const cost = presetAssignments[String(pokemonId)]
+        if (cost === undefined) return // Pokémon not in preset
+        pickCost = cost
+      } else {
+        // Tier-based fallback
+        pickCost = (draft.config?.tierCosts ?? {})[tier] ?? 0
+      }
+      const spent = draft.picks.filter(pk => pk.userId === userId).reduce((s, pk) => s + (pk.cost ?? 0), 0)
+      if (pickCost > (draft.config.coins ?? 0) - spent) return
+    }
 
-    // Persist pick and updated index to DB
-    const dbDraft = getDraftByInstance.get(instanceId)
+    const pickIdx = draft.currentPickIndex
+    draft.picks.push({ pokemonId, pokemonName, tier, userId, pickOrder: pickIdx, cost: pickCost })
+    draft.currentPickIndex++
+
+    const dbDraft = getDraftByInstance.get(draftInstanceId)
     if (dbDraft) {
       const teamRow = getTeamId.get(dbDraft.id, userId)
-      if (teamRow) {
-        insertPick.run({ team_id: teamRow.id, pokemon_id: pokemonId, pokemon_name: pokemonName, tier: tier ?? null, cost: null, pick_order: pickIdx + 1 })
+      if (teamRow) insertPick.run({ team_id: teamRow.id, pokemon_id: pokemonId, pokemon_name: pokemonName, tier: tier ?? null, cost: null, pick_order: pickIdx + 1 })
+      updatePickState.run({ phase: draft.phase, pick_order: JSON.stringify(draft.pickOrder), current_pick_index: draft.currentPickIndex, instance_id: draftInstanceId })
+    }
+
+    const totalPicks = draft.pickOrder.length * (draft.config?.teamSize ?? 6)
+    if (draft.currentPickIndex >= totalPicks) {
+      draft.phase = 'complete'
+      updateDraftPhase.run('complete', draftInstanceId)
+    }
+
+    console.log(`${userId} picked ${pokemonName} in draft ${draftInstanceId} (pick #${pickIdx + 1})`)
+    broadcastRoomState(instanceId)
+    if (draft.phase === 'picking') {
+      const nextPicker = currentPickerId(draft.pickOrder, draft.currentPickIndex)
+      if (nextPicker && !(await isUserConnected(instanceId, nextPicker))) {
+        await sendTurnDM(nextPicker, draft.config.name)
       }
-      updatePickState.run({ phase: room.draft.phase, pick_order: JSON.stringify(room.draft.pickOrder), current_pick_index: room.draft.currentPickIndex, instance_id: instanceId })
+    }
+  })
+
+  socket.on("nominate-pokemon", ({ instanceId, draftInstanceId, pokemonId, pokemonName, tier }) => {
+    const room = rooms.get(instanceId)
+    const draft = room?.drafts?.[draftInstanceId]
+    if (!draft || draft.phase !== 'picking') return
+
+    const userId = socket.data.user?.id
+    if (!userId) return
+
+    // Safety: skip any done players that endAuction may have missed and re-check for all-done
+    {
+      const n = draft.pickOrder.length
+      let advanced = false
+      for (let i = 0; i <= n * 2; i++) {
+        if (draft.pickOrder.every(p => isPlayerDone(draft, p.id))) {
+          draft.phase = 'complete'
+          updateDraftPhase.run('complete', draftInstanceId)
+          broadcastRoomState(instanceId)
+          return
+        }
+        if (!isPlayerDone(draft, currentPickerId(draft.pickOrder, draft.currentPickIndex))) break
+        draft.currentPickIndex++
+        advanced = true
+      }
+      if (advanced) {
+        updatePickState.run({ phase: draft.phase, pick_order: JSON.stringify(draft.pickOrder), current_pick_index: draft.currentPickIndex, instance_id: draftInstanceId })
+        broadcastRoomState(instanceId)
+        return
+      }
     }
 
-    // Check draft completion
-    const totalPicks = room.draft.pickOrder.length * (room.draft.config?.teamSize ?? 6)
-    if (room.draft.currentPickIndex >= totalPicks) {
-      room.draft.phase = 'complete'
-      updateDraftPhase.run('complete', instanceId)
+    if (userId !== currentPickerId(draft.pickOrder, draft.currentPickIndex)) return
+    if (draft.auctionState) return
+    if (draft.picks.some(pk => pk.pokemonId === pokemonId)) return
+
+    const minBid = draft.config.minBid ?? 0
+    const minTeamSize = draft.config.minTeamSize ?? draft.config.teamSize
+    const myCount = draft.picks.filter(pk => pk.userId === userId).length
+    const mySpent = draft.picks.filter(pk => pk.userId === userId).reduce((s, pk) => s + (pk.cost ?? 0), 0)
+    const myCoins = draft.config.coins - mySpent
+    const reserve = Math.max(0, minTeamSize - myCount - 1) * minBid
+    if (myCoins < minBid + reserve) return
+
+    const timerSeconds = draft.config.auctionTimer ?? 10
+    const timerEnd = Date.now() + timerSeconds * 1000
+
+    draft.auctionState = {
+      pokemonId,
+      pokemonName,
+      tier: tier || null,
+      currentBid: minBid,
+      highestBidderId: userId,
+      highestBidderName: socket.data.user.global_name || socket.data.user.username,
+      nominatorId: userId,
+      hasOtherBid: false,
+      timerEnd,
     }
 
-    console.log(`${userId} picked ${pokemonName} in room ${instanceId} (pick #${pickIdx + 1})`)
+    const timerRef = setTimeout(() => endAuction(instanceId, draftInstanceId), timerSeconds * 1000)
+    auctionTimers.set(draftInstanceId, timerRef)
+
+    console.log(`Auction started: ${pokemonName} in ${draftInstanceId} opening at ${minBid}`)
     broadcastRoomState(instanceId)
   })
 
+  socket.on("place-bid", ({ instanceId, draftInstanceId, amount }) => {
+    const room = rooms.get(instanceId)
+    const draft = room?.drafts?.[draftInstanceId]
+    if (!draft?.auctionState) return
+
+    const userId = socket.data.user?.id
+    if (!userId) return
+
+    const { auctionState } = draft
+    const maxTeamSize = draft.config.teamSize
+    const minBid = draft.config.minBid ?? 0
+    const minTeamSize = draft.config.minTeamSize ?? maxTeamSize
+
+    const myCount = draft.picks.filter(pk => pk.userId === userId).length
+    if (myCount >= maxTeamSize) return
+    if (userId === auctionState.highestBidderId) return
+    if (userId === auctionState.nominatorId && !auctionState.hasOtherBid) return
+    if (amount <= auctionState.currentBid) return
+
+    const mySpent = draft.picks.filter(pk => pk.userId === userId).reduce((s, pk) => s + (pk.cost ?? 0), 0)
+    const myCoins = draft.config.coins - mySpent
+    const reserve = Math.max(0, minTeamSize - myCount - 1) * minBid
+    if (myCoins < amount + reserve) return
+
+    auctionState.currentBid = amount
+    auctionState.highestBidderId = userId
+    auctionState.highestBidderName = socket.data.user.global_name || socket.data.user.username
+    if (userId !== auctionState.nominatorId) auctionState.hasOtherBid = true
+
+    const timerSeconds = draft.config.auctionTimer ?? 10
+    auctionState.timerEnd = Date.now() + timerSeconds * 1000
+    clearTimeout(auctionTimers.get(draftInstanceId))
+    auctionTimers.set(draftInstanceId, setTimeout(() => endAuction(instanceId, draftInstanceId), timerSeconds * 1000))
+
+    console.log(`Bid: ${userId} → ${amount} on ${auctionState.pokemonName}`)
+    broadcastRoomState(instanceId)
+  })
+
+  socket.on("send-turn-dm", async ({ instanceId, draftInstanceId, targetUserId }) => {
+    const room = rooms.get(instanceId)
+    const draft = room?.drafts?.[draftInstanceId]
+    if (!draft) return
+    if (draft.creatorId !== socket.data.user?.id) return
+    await sendTurnDM(targetUserId, draft.config.name)
+  })
+
   socket.on("disconnect", () => {
-    const { instanceId, user } = socket.data;
-    if (!instanceId || !user) return;
+    const { instanceId, draftInstanceId, user } = socket.data
+    if (!instanceId || !user) return
 
-    const room = rooms.get(instanceId);
-    if (!room) return;
+    const room = rooms.get(instanceId)
+    if (!room) return
 
-    room.participants = room.participants.filter(p => p.id !== user.id);
-    console.log(`${user.username} left room ${instanceId}`);
-
-    if (room.participants.length === 0) {
-      rooms.delete(instanceId);
-      console.log(`Room ${instanceId} deleted (empty)`);
-    } else {
-      // Transfer host if the host left
-      if (room.host === user.id) {
-        room.host = room.participants[0].id;
-        console.log(`Host transferred to ${room.participants[0].username}`);
-      }
-      broadcastRoomState(instanceId);
+    if (draftInstanceId && room.drafts[draftInstanceId]) {
+      room.drafts[draftInstanceId].participants = room.drafts[draftInstanceId].participants.filter(p => p.id !== user.id)
     }
-  });
+    if (room.configuringUsers) {
+      room.configuringUsers = room.configuringUsers.filter(u => u.id !== user.id)
+    }
+
+    const allParticipants = Object.values(room.drafts).flatMap(d => d.participants)
+    if (allParticipants.length === 0) {
+      rooms.delete(instanceId)
+      console.log(`Room ${instanceId} deleted (empty)`)
+      return
+    }
+
+    if (room.host === user.id) {
+      room.host = allParticipants[0].id
+      console.log(`Host transferred in room ${instanceId}`)
+    }
+
+    broadcastRoomState(instanceId)
+  })
 });
 
 // ── Start ────────────────────────────────────────────────────────────────────

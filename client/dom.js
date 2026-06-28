@@ -17,6 +17,20 @@ export function showConfirm(message, confirmLabel = 'Confirmar') {
   })
 }
 
+export function showToast(message, duration = 4000) {
+  const toast = document.createElement('div')
+  toast.className = 'toast'
+  toast.textContent = message
+  document.body.appendChild(toast)
+  // Force reflow so the transition plays
+  toast.getBoundingClientRect()
+  toast.classList.add('toast-visible')
+  setTimeout(() => {
+    toast.classList.remove('toast-visible')
+    toast.addEventListener('transitionend', () => toast.remove(), { once: true })
+  }, duration)
+}
+
 export function setHTML(container, html) {
   const active    = document.activeElement
   const id        = active?.id || null

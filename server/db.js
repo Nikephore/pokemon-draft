@@ -9,6 +9,18 @@ db.pragma('journal_mode = WAL')
 db.pragma('foreign_keys = ON')
 
 db.exec(`
+  CREATE TABLE IF NOT EXISTS presets (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    instance_id TEXT    NOT NULL,
+    name        TEXT    NOT NULL,
+    max_points  INTEGER NOT NULL DEFAULT 10,
+    status      TEXT    NOT NULL DEFAULT 'draft',
+    assignments TEXT    NOT NULL DEFAULT '{}',
+    created_by  TEXT,
+    created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+    updated_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+  );
+
   CREATE TABLE IF NOT EXISTS drafts (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
     instance_id         TEXT    NOT NULL UNIQUE,
@@ -58,17 +70,35 @@ for (const stmt of [
   'ALTER TABLE drafts ADD COLUMN pick_order TEXT',
   'ALTER TABLE drafts ADD COLUMN current_pick_index INTEGER NOT NULL DEFAULT 0',
   'ALTER TABLE drafts ADD COLUMN max_megas INTEGER NOT NULL DEFAULT 0',
+  'ALTER TABLE drafts ADD COLUMN discord_instance_id TEXT',
+  "ALTER TABLE drafts ADD COLUMN type TEXT NOT NULL DEFAULT 'clasico'",
+  'ALTER TABLE drafts ADD COLUMN tier_costs TEXT',
+  'ALTER TABLE drafts ADD COLUMN preset_id INTEGER',
+  'ALTER TABLE drafts ADD COLUMN preset_assignments TEXT',
+  'ALTER TABLE drafts ADD COLUMN min_team_size INTEGER NOT NULL DEFAULT 0',
+  'ALTER TABLE drafts ADD COLUMN min_bid INTEGER NOT NULL DEFAULT 0',
+  'ALTER TABLE drafts ADD COLUMN auction_timer INTEGER NOT NULL DEFAULT 10',
 ]) {
   try { db.exec(stmt) } catch (_) {}
 }
+// Backfill discord_instance_id for rows created before multi-draft support
+try {
+  db.exec(`UPDATE drafts SET discord_instance_id = instance_id WHERE discord_instance_id IS NULL`)
+} catch (_) {}
+
+export const getPresetsByInstance = db.prepare(`SELECT id, name, max_points, status, created_at FROM presets WHERE instance_id = ? ORDER BY created_at DESC`)
+export const getPresetById        = db.prepare(`SELECT * FROM presets WHERE id = ?`)
+export const insertPreset         = db.prepare(`INSERT INTO presets (instance_id, name, max_points, status, assignments, created_by) VALUES (@instance_id, @name, @max_points, @status, @assignments, @created_by)`)
+export const updatePreset         = db.prepare(`UPDATE presets SET name = @name, assignments = @assignments, status = @status, updated_at = datetime('now') WHERE id = @id`)
+export const deletePreset         = db.prepare(`DELETE FROM presets WHERE id = ?`)
 
 export const getDraftByInstance = db.prepare(`SELECT * FROM drafts WHERE instance_id = ?`)
 export const getParticipants    = db.prepare(`SELECT * FROM draft_participants WHERE draft_id = ?`)
 export const getActiveDrafts    = db.prepare(`SELECT * FROM drafts WHERE phase != 'complete'`)
 
 export const insertDraft = db.prepare(`
-  INSERT INTO drafts (instance_id, name, host_id, team_size, coins, tier_slots, max_megas, phase)
-  VALUES (@instance_id, @name, @host_id, @team_size, @coins, @tier_slots, @max_megas, @phase)
+  INSERT INTO drafts (instance_id, discord_instance_id, name, host_id, team_size, min_team_size, min_bid, auction_timer, coins, tier_slots, max_megas, type, tier_costs, preset_id, preset_assignments, phase)
+  VALUES (@instance_id, @discord_instance_id, @name, @host_id, @team_size, @min_team_size, @min_bid, @auction_timer, @coins, @tier_slots, @max_megas, @type, @tier_costs, @preset_id, @preset_assignments, @phase)
 `)
 
 export const updateDraftPhase = db.prepare(`UPDATE drafts SET phase = ? WHERE instance_id = ?`)
@@ -137,6 +167,7 @@ export const getAllPicksForDraft = db.prepare(`
   SELECT tp.pokemon_id   AS pokemonId,
          tp.pokemon_name AS pokemonName,
          tp.tier,
+         tp.cost,
          tp.pick_order   AS pickOrder,
          t.user_id       AS userId
   FROM team_pokemon tp

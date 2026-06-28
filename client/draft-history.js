@@ -48,6 +48,9 @@ async function renderList() {
             <div class="draft-list-card-main">
               <span class="draft-list-name">${d.name}</span>
               <span class="draft-phase-chip draft-phase-chip-${d.phase}">${phaseLabel(d.phase)}</span>
+              ${d.phase !== 'complete' ? `
+                <a class="draft-continue-btn" href="#join-draft/${d.instance_id}">Continuar →</a>
+              ` : ''}
               ${d.host_id === myId ? `
                 <button class="draft-delete-btn" data-instance="${d.instance_id}">Eliminar</button>
               ` : ''}
@@ -62,7 +65,10 @@ async function renderList() {
     `
 
     app.querySelectorAll('.draft-list-card').forEach(card => {
-      card.addEventListener('click', () => renderDetail(card.dataset.instance))
+      card.addEventListener('click', e => {
+        if (e.target.closest('.draft-continue-btn, .draft-delete-btn')) return
+        renderDetail(card.dataset.instance)
+      })
     })
 
     app.querySelectorAll('.draft-delete-btn').forEach(btn => {

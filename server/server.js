@@ -7,6 +7,9 @@ import {
   getDraftByInstance,
   getParticipants,
   getActiveDrafts,
+  getActiveDraftsByInstance,
+  getActiveDraftsByGuild,
+  updateDraftGuildId,
   getDraftsByUser,
   getTeamsWithPicks,
   getAllPicksForDraft,
@@ -316,17 +319,12 @@ const rooms = new Map();
 // Active auction setTimeout handles — kept outside draft object so they don't serialize
 const auctionTimers = new Map() // key: draftInstanceId
 
-// Restore active drafts from DB — group by discord_instance_id to support multiple drafts per room
-for (const d of getActiveDrafts.all()) {
-  const channelId = d.discord_instance_id || d.instance_id
-  if (!rooms.has(channelId)) {
-    rooms.set(channelId, { host: d.host_id, drafts: {}, configuringUsers: [] })
-  }
+function restoreDraftIntoRoom(room, d) {
   const participants = getParticipants.all(d.id).map(p => ({
     id: p.user_id, username: p.username, global_name: p.global_name,
     avatar: p.avatar, discriminator: '0',
   }))
-  rooms.get(channelId).drafts[d.instance_id] = {
+  room.drafts[d.instance_id] = {
     id: d.id,
     config: {
       name: d.name, teamSize: d.team_size, coins: d.coins,
@@ -347,6 +345,16 @@ for (const d of getActiveDrafts.all()) {
     readyPlayers: [],
     creatorId: d.host_id,
   }
+  return room.drafts[d.instance_id]
+}
+
+// Restore active drafts from DB — group by discord_instance_id to support multiple drafts per room
+for (const d of getActiveDrafts.all()) {
+  const channelId = d.discord_instance_id || d.instance_id
+  if (!rooms.has(channelId)) {
+    rooms.set(channelId, { host: d.host_id, drafts: {}, configuringUsers: [] })
+  }
+  restoreDraftIntoRoom(rooms.get(channelId), d)
 }
 console.log(`Restored ${rooms.size} room(s) from DB`)
 
@@ -410,7 +418,7 @@ async function endAuction(instanceId, draftInstanceId) {
   if (draft.phase === 'picking') {
     const nextNominator = currentPickerId(draft.pickOrder, draft.currentPickIndex)
     if (nextNominator && !(await isUserConnected(instanceId, nextNominator))) {
-      await sendTurnDM(nextNominator, draft.config.name)
+      await sendTurnMention(nextNominator, draft.config.name, room.channelId)
     }
   }
 }
@@ -447,33 +455,27 @@ async function isUserConnected(instanceId, userId) {
   return sockets.some(s => s.data.user?.id === userId)
 }
 
-async function sendTurnDM(userId, draftName) {
+async function sendTurnMention(userId, draftName, channelId) {
   const token = process.env.DISCORD_BOT_TOKEN
-  if (!token) return
+  if (!token || !channelId) return
   try {
-    const dmRes = await fetch('https://discord.com/api/v10/users/@me/channels', {
-      method: 'POST',
-      headers: { Authorization: `Bot ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ recipient_id: userId }),
-    })
-    const { id: channelId } = await dmRes.json()
-    if (!channelId) return
-    await fetch(`https://discord.com/api/v10/channels/${channelId}/messages`, {
+    const res = await fetch(`https://discord.com/api/v10/channels/${channelId}/messages`, {
       method: 'POST',
       headers: { Authorization: `Bot ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        content: `¡Es tu turno en el draft **${draftName}**! Entra a la actividad de Discord para hacer tu pick.`,
+        content: `<@${userId}> ¡Es tu turno en el draft **${draftName}**!`,
       }),
     })
-    console.log(`Turn DM sent to ${userId} for draft "${draftName}"`)
+    if (!res.ok) console.error(`Mention failed (${res.status}) for user ${userId} in channel ${channelId}`)
+    else console.log(`Turn mention sent to ${userId} in channel ${channelId}`)
   } catch (e) {
-    console.error(`DM failed for user ${userId}:`, e.message)
+    console.error(`Mention failed for user ${userId}:`, e.message)
   }
 }
 
 io.on("connection", socket => {
   // View-only: subscribes to broadcasts without joining a draft
-  socket.on("view-room", ({ instanceId, user }) => {
+  socket.on("view-room", ({ instanceId, user, channelId, guildId }) => {
     socket.join(instanceId)
     socket.data.instanceId = instanceId
     if (user) socket.data.user = user
@@ -482,11 +484,29 @@ io.on("connection", socket => {
       console.log(`Room created via lobby: ${instanceId}`)
     }
     const room = rooms.get(instanceId)
+    if (channelId) room.channelId = channelId
+    if (guildId) room.guildId = guildId
+
+    // Restore active drafts for this guild/server that aren't in memory yet
+    // Primary: by stable guild_id. Fallback: by discord_instance_id (same session) or all active (for old drafts without guild_id).
+    const seen = new Set()
+    const addDrafts = drafts => {
+      for (const d of drafts) {
+        if (!seen.has(d.instance_id) && !room.drafts[d.instance_id]) {
+          seen.add(d.instance_id)
+          restoreDraftIntoRoom(room, d)
+          console.log(`Draft ${d.instance_id} restored on view-room`)
+        }
+      }
+    }
+    if (guildId) addDrafts(getActiveDraftsByGuild.all(guildId))
+    addDrafts(getActiveDraftsByInstance.all(instanceId))
+
     if (room) socket.emit("room-state", room)
   })
 
   // Join a specific draft within the room
-  socket.on("join-room", ({ instanceId, draftInstanceId, user }) => {
+  socket.on("join-room", ({ instanceId, draftInstanceId, user, channelId, guildId }) => {
     socket.join(instanceId)
     socket.data.instanceId = instanceId
     socket.data.draftInstanceId = draftInstanceId
@@ -496,7 +516,21 @@ io.on("connection", socket => {
       rooms.set(instanceId, { host: user.id, drafts: {}, configuringUsers: [] })
     }
     const room = rooms.get(instanceId)
-    const draft = room.drafts[draftInstanceId]
+    if (channelId) room.channelId = channelId
+    if (guildId) room.guildId = guildId
+    let draft = room.drafts[draftInstanceId]
+
+    // If draft not in memory (e.g. server restarted and room key mismatch), restore from DB
+    if (!draft) {
+      const dbDraft = getDraftByInstance.get(draftInstanceId)
+      if (dbDraft && dbDraft.phase !== 'complete') {
+        draft = restoreDraftIntoRoom(room, dbDraft)
+        console.log(`Draft ${draftInstanceId} restored on-demand from DB`)
+      }
+    }
+
+    // Backfill guild_id for drafts created before this field existed
+    if (draft && guildId) updateDraftGuildId.run(guildId, draftInstanceId)
 
     // Only add to participants (and persist) if the draft is still in lobby phase
     if (draft && draft.phase === 'lobby' && !draft.participants.find(p => p.id === user.id)) {
@@ -562,6 +596,7 @@ io.on("connection", socket => {
     insertDraft.run({
       instance_id: draftInstanceId,
       discord_instance_id: instanceId,
+      guild_id: room.guildId ?? null,
       name: config.name,
       host_id: creatorId,
       team_size: config.teamSize,
@@ -635,12 +670,13 @@ io.on("connection", socket => {
     broadcastRoomState(instanceId)
     const firstPicker = shuffled[0]
     if (firstPicker && !(await isUserConnected(instanceId, firstPicker.id))) {
-      await sendTurnDM(firstPicker.id, draft.config.name)
+      await sendTurnMention(firstPicker.id, draft.config.name, room.channelId)
     }
   })
 
   socket.on("pick-pokemon", async ({ instanceId, draftInstanceId, pokemonId, pokemonName, tier }) => {
-    const draft = rooms.get(instanceId)?.drafts?.[draftInstanceId]
+    const room = rooms.get(instanceId)
+    const draft = room?.drafts?.[draftInstanceId]
     if (!draft || draft.phase !== 'picking') return
 
     const userId = socket.data.user?.id
@@ -701,7 +737,7 @@ io.on("connection", socket => {
     if (draft.phase === 'picking') {
       const nextPicker = currentPickerId(draft.pickOrder, draft.currentPickIndex)
       if (nextPicker && !(await isUserConnected(instanceId, nextPicker))) {
-        await sendTurnDM(nextPicker, draft.config.name)
+        await sendTurnMention(nextPicker, draft.config.name, room.channelId)
       }
     }
   })
@@ -813,7 +849,7 @@ io.on("connection", socket => {
     const draft = room?.drafts?.[draftInstanceId]
     if (!draft) return
     if (draft.creatorId !== socket.data.user?.id) return
-    await sendTurnDM(targetUserId, draft.config.name)
+    await sendTurnMention(targetUserId, draft.config.name, room.channelId)
   })
 
   socket.on("disconnect", () => {

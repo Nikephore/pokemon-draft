@@ -30,13 +30,20 @@ export function init({ sdk, user }) {
   socket.off('room-state')
   socket.off('connect')
 
-  const joinRoom = () => socket.emit('view-room', { instanceId, user })
+  const joinRoom = () => socket.emit('view-room', { instanceId, user, channelId: sdk.channelId, guildId: sdk.guildId })
   socket.on('connect', joinRoom)
   joinRoom()
 
   socket.on('room-state', room => {
     renderCards(room, user.id)
   })
+}
+
+function snakeCurrentPickerId(pickOrder, idx) {
+  if (!pickOrder?.length) return null
+  const n = pickOrder.length
+  const abs = idx % (n * 2)
+  return abs < n ? pickOrder[abs]?.id : pickOrder[n * 2 - 1 - abs]?.id
 }
 
 function renderCards(room, myId) {
@@ -63,13 +70,22 @@ function renderCards(room, myId) {
     const type = draft.config?.draftType ?? 'clasico'
     const isCreator = draft.creatorId === myId
     const inLobby = draft.phase === 'lobby'
-    const cardClass = inLobby
-      ? 'lobby-card lobby-card-creating'
+    const isParticipant = draft.participants?.some(p => p.id === myId)
+
+    const isMyTurn = !inLobby && type !== 'subasta'
+      && snakeCurrentPickerId(draft.pickOrder, draft.currentPickIndex ?? 0) === myId
+
+    const cardClass = isMyTurn
+      ? 'lobby-card lobby-card-my-turn'
       : 'lobby-card lobby-card-highlight'
+
     const phaseLabel = inLobby ? 'En creación' : 'En curso'
+
     const arrowLabel = inLobby && isCreator ? 'Configurar →'
-      : !inLobby && isCreator ? 'Reanudar →'
+      : isMyTurn ? '¡Tu turno! →'
+      : !inLobby && type === 'subasta' && isParticipant ? 'Reanudar →'
       : '→'
+
     return `
       <a class="${cardClass}" href="#join-draft/${draftId}">
         <span class="lobby-card-icon">${TYPE_ICON[type] ?? '🎯'}</span>

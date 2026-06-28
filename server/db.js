@@ -78,6 +78,7 @@ for (const stmt of [
   'ALTER TABLE drafts ADD COLUMN min_team_size INTEGER NOT NULL DEFAULT 0',
   'ALTER TABLE drafts ADD COLUMN min_bid INTEGER NOT NULL DEFAULT 0',
   'ALTER TABLE drafts ADD COLUMN auction_timer INTEGER NOT NULL DEFAULT 10',
+  'ALTER TABLE drafts ADD COLUMN guild_id TEXT',
 ]) {
   try { db.exec(stmt) } catch (_) {}
 }
@@ -94,14 +95,17 @@ export const deletePreset         = db.prepare(`DELETE FROM presets WHERE id = ?
 
 export const getDraftByInstance = db.prepare(`SELECT * FROM drafts WHERE instance_id = ?`)
 export const getParticipants    = db.prepare(`SELECT * FROM draft_participants WHERE draft_id = ?`)
-export const getActiveDrafts    = db.prepare(`SELECT * FROM drafts WHERE phase != 'complete'`)
+export const getActiveDrafts           = db.prepare(`SELECT * FROM drafts WHERE phase != 'complete'`)
+export const getActiveDraftsByInstance = db.prepare(`SELECT * FROM drafts WHERE phase != 'complete' AND discord_instance_id = ?`)
+export const getActiveDraftsByGuild    = db.prepare(`SELECT * FROM drafts WHERE phase != 'complete' AND guild_id = ?`)
 
 export const insertDraft = db.prepare(`
-  INSERT INTO drafts (instance_id, discord_instance_id, name, host_id, team_size, min_team_size, min_bid, auction_timer, coins, tier_slots, max_megas, type, tier_costs, preset_id, preset_assignments, phase)
-  VALUES (@instance_id, @discord_instance_id, @name, @host_id, @team_size, @min_team_size, @min_bid, @auction_timer, @coins, @tier_slots, @max_megas, @type, @tier_costs, @preset_id, @preset_assignments, @phase)
+  INSERT INTO drafts (instance_id, discord_instance_id, guild_id, name, host_id, team_size, min_team_size, min_bid, auction_timer, coins, tier_slots, max_megas, type, tier_costs, preset_id, preset_assignments, phase)
+  VALUES (@instance_id, @discord_instance_id, @guild_id, @name, @host_id, @team_size, @min_team_size, @min_bid, @auction_timer, @coins, @tier_slots, @max_megas, @type, @tier_costs, @preset_id, @preset_assignments, @phase)
 `)
 
-export const updateDraftPhase = db.prepare(`UPDATE drafts SET phase = ? WHERE instance_id = ?`)
+export const updateDraftGuildId = db.prepare(`UPDATE drafts SET guild_id = ? WHERE instance_id = ? AND guild_id IS NULL`)
+export const updateDraftPhase   = db.prepare(`UPDATE drafts SET phase = ? WHERE instance_id = ?`)
 
 export const updatePickState = db.prepare(`
   UPDATE drafts SET phase = @phase, pick_order = @pick_order, current_pick_index = @current_pick_index

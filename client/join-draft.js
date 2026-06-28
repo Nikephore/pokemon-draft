@@ -86,7 +86,7 @@ export function init(discordCtx, draftInstanceId) {
   socket.off('draft-cancelled')
   socket.off('connect')
 
-  const joinRoom = () => socket.emit('join-room', { instanceId: sdk.instanceId, draftInstanceId, user })
+  const joinRoom = () => socket.emit('join-room', { instanceId: sdk.instanceId, draftInstanceId, user, channelId: sdk.channelId, guildId: sdk.guildId })
   socket.on('connect', joinRoom)
   joinRoom()
 
@@ -211,9 +211,9 @@ function render(room) {
     const currentNominatorId = currentPickerId(_pickOrder, _currentPickIndex)
     const nominatorChanged   = _prevNominatorId !== currentNominatorId
 
-    // Reset all picker filters on every turn change
+    // Reset only free-text search on turn change; keep tier/type/mega filters
     if (nominatorChanged) {
-      _pickSearch = ''; _pickTier = ''; _pickType = ''; _pickMegaFilter = false; _pickPage = 1
+      _pickSearch = ''; _pickPage = 1
       const searchEl = document.querySelector('#pick-search')
       if (searchEl) searchEl.value = ''
     }
@@ -1152,10 +1152,11 @@ function renderPickResults() {
           ? (_presetAssignments ? (_presetAssignments[String(p.id)] ?? 0) : (_tierCosts[p.tier] ?? 0))
           : 0
         const cantAfford  = _draftType === 'puntos' && tierCost > myRemainingBudget
-        const isDisabled  = isMyTurn && !isPicked && !isInAuction && (tierFull || megaFull || cantAfford)
-        const isPickable  = isMyTurn && !isPicked && !isInAuction && !isDisabled
+        const isDisabled       = isMyTurn && !isPicked && !isInAuction && (tierFull || megaFull || cantAfford)
+        const isPickable       = isMyTurn && !isPicked && !isInAuction && !isDisabled
+        const isNotSelectable  = !isMyTurn && !isPicked && !isInAuction
 
-        const cls   = `pokemon-card${isPicked ? ' pokemon-card-picked' : ''}${isInAuction ? ' pokemon-card-in-auction' : ''}${isPickable ? ' pokemon-card-pickable' : ''}${isDisabled ? ' pokemon-card-disabled' : ''}`
+        const cls   = `pokemon-card${isPicked ? ' pokemon-card-picked' : ''}${isInAuction ? ' pokemon-card-in-auction' : ''}${isPickable ? ' pokemon-card-pickable' : ''}${isDisabled ? ' pokemon-card-disabled' : ''}${isNotSelectable ? ' pokemon-card-not-selectable' : ''}`
         const style = isPicked ? `style="background:${color}28;border-color:${color}"` : ''
         const data  = isPickable ? `data-id="${p.id}" data-name="${p.name}" data-tier="${p.tier || ''}"` : ''
 

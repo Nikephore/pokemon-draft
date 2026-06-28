@@ -489,6 +489,14 @@ h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 0.5rem; }
 
 .lobby-card-highlight .lobby-card-title { color: var(--red); }
 
+.lobby-card-my-turn {
+  border-color: rgba(46, 125, 50, 0.4);
+  background: linear-gradient(135deg, #fff 60%, rgba(46, 125, 50, 0.09));
+}
+
+.lobby-card-my-turn .lobby-card-title { color: #2e7d32; }
+.lobby-card-my-turn .lobby-card-arrow { color: #2e7d32; font-weight: 700; }
+
 .lobby-card-muted {
   opacity: 0.45;
   cursor: default;
@@ -772,6 +780,16 @@ button:focus, button:focus-visible { outline: 3px solid var(--red-border); }
   transform: translateY(-4px);
   box-shadow: 0 8px 20px rgba(0,0,0,0.18);
   border-color: var(--red);
+}
+
+.pokemon-card-not-selectable {
+  cursor: default;
+}
+
+.pokemon-card-not-selectable:hover {
+  transform: none;
+  box-shadow: none;
+  border-color: rgba(0,0,0,0.08);
 }
 
 .pokemon-card-disabled {
@@ -1104,6 +1122,25 @@ button:focus, button:focus-visible { outline: 3px solid var(--red-border); }
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.draft-continue-btn {
+  flex-shrink: 0;
+  padding: 0.2rem 0.6rem;
+  border-radius: 6px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #2e7d32;
+  background: rgba(46, 125, 50, 0.08);
+  border: 1px solid rgba(46, 125, 50, 0.3);
+  text-decoration: none;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.draft-continue-btn:hover {
+  background: #2e7d32;
+  border-color: #2e7d32;
+  color: #fff;
 }
 
 .draft-delete-btn {
